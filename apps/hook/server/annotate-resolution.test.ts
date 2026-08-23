@@ -19,6 +19,8 @@ beforeAll(() => {
   writeFileSync(join(root, "big.md"), "x".repeat(2 * 1024 * 1024 + 1));
   mkdirSync(join(root, "notebooks"), { recursive: true });
   writeFileSync(join(root, "notebooks/tour.livemd"), "# Livebook tour");
+  mkdirSync(join(root, "pdfs"), { recursive: true });
+  writeFileSync(join(root, "pdfs/source.pdf"), "%PDF-1.4\nfixture\n%%EOF\n");
 });
 
 afterAll(() => {
@@ -58,6 +60,20 @@ describe("resolveAnnotateTarget", () => {
       expect(result.annotateMode).toBe("annotate-folder");
       expect(result.folderPath).toBe(join(root, "docs"));
     }
+  });
+
+  test("resolves a PDF as a binary surface and accepts a PDF-only folder", async () => {
+    const pdf = await resolve("pdfs/source.pdf");
+    expect(pdf.ok).toBe(true);
+    if (pdf.ok) {
+      expect(pdf.absolutePath).toBe(join(root, "pdfs/source.pdf"));
+      expect(pdf.markdown).toBe("");
+      expect(pdf.renderAs).toBe("pdf");
+      expect(pdf.annotateMode).toBe("annotate");
+    }
+    const folder = await resolve("pdfs");
+    expect(folder.ok).toBe(true);
+    if (folder.ok) expect(folder.annotateMode).toBe("annotate-folder");
   });
 
   test("resolves an HTML file as raw HTML by default and markdown with --markdown", async () => {

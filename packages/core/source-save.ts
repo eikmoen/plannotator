@@ -6,6 +6,7 @@ export type SourceSaveDisabledReason =
 	| "unsupported-extension"
 	| "converted-source"
 	| "html-render"
+	| "pdf-render"
 	| "folder-mode"
 	| "message-mode"
 	| "shared-session"

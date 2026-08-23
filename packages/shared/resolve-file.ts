@@ -29,10 +29,13 @@ export { MAX_ANNOTATABLE_FILE_BYTES } from "./annotatable";
 export {
 	getAnnotatableTextRegex,
 	getAnnotatableDocRegex,
+	getAnnotatableTargetRegex,
 	getAnnotatableExtensionsHint,
+	getAnnotatableTargetExtensionsHint,
 	getExtraMarkdownExtensions,
 	isAnnotatableTextPath,
 	isAnnotatableDocPath,
+	isAnnotatableTargetPath,
 } from "./markdown-extensions";
 
 const WINDOWS_DRIVE_PATH_PATTERNS = [

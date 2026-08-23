@@ -13,9 +13,9 @@
  *    - Runs git diff, opens review UI
  *    - Outputs feedback to stdout (captured by slash command)
  *
- * 3. Annotate (`plannotator annotate <file.md | file.txt>`):
+ * 3. Annotate (`plannotator annotate <file.md | file.pdf | file.txt>`):
  *    - Triggered by /plannotator-annotate slash command
- *    - Opens any markdown file in the annotation UI
+ *    - Opens markdown, PDF, and other supported documents in the annotation UI
  *    - Outputs structured feedback to stdout
  *
  * 4. Archive (`plannotator archive`):
@@ -1120,7 +1120,7 @@ if (args[0] === "sessions") {
 
   const rawFilePath = args[1];
   if (!rawFilePath) {
-    exitAnnotateStartupFailure("Usage: plannotator annotate <file.md | file.txt | file.html | https://... | folder/>  [--markdown] [--no-jina] [--app] [--static] [--gate] [--json] [--hook] [--require-approval] [--result-file <path>]");
+    exitAnnotateStartupFailure("Usage: plannotator annotate <file.md | file.pdf | file.html | https://... | folder/>  [--markdown] [--no-jina] [--app] [--static] [--gate] [--json] [--hook] [--require-approval] [--result-file <path>]");
   }
 
   // Use PLANNOTATOR_CWD if set (original working directory before script cd'd)
@@ -1243,6 +1243,7 @@ if (args[0] === "sessions") {
     sourceConverted,
     isUrl,
     liveApp: liveAppResolved,
+    renderAs,
   } = resolution;
 
   // Remote hard-off (layer 1 of 3; the server throw and the proxy's
@@ -1299,6 +1300,7 @@ if (args[0] === "sessions") {
     }),
     rawHtml,
     renderHtml: !!rawHtml,
+    renderPdf: renderAs === "pdf",
     convertHtml: renderMarkdownFlag,
     agentCwd: projectRoot,
     project: annotateProject,
@@ -1312,7 +1314,10 @@ if (args[0] === "sessions") {
       handleAnnotateServerReady(url, isRemote, port);
 
       if (isRemote && sharingEnabled) {
-        if (rawHtml) {
+        if (renderAs === "pdf") {
+          // PDF sessions contain binary source material and durable local
+          // sidecars; they are never uploaded through document sharing.
+        } else if (rawHtml) {
           await writeRemoteShareLink("", shareBaseUrl, "annotate", "HTML document only", {
             rawHtml: inlineHtmlLocalAssets(rawHtml, absolutePath),
             pasteApiUrl,

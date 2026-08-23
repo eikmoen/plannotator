@@ -27,6 +27,7 @@ import {
 	getFileBrowserMaxFiles,
 	warmFileListCache,
 	getAnnotatableDocRegex,
+	getAnnotatableTargetRegex,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "@plannotator/shared/resolve-file";
@@ -346,8 +347,34 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 		}
 	}
 
-	// HTML files: resolve directly (not via resolveMarkdownFile which only handles .md/.mdx)
 	const projectRoot = allowedRoots[0];
+
+	// PDFs are binary and return session-bound stream/sidecar URLs instead of
+	// entering the UTF-8 document pipeline.
+	if (/\.pdf$/i.test(requestedPath)) {
+		const resolvedPdf = resolveUserPath(requestedPath, resolvedBase || projectRoot);
+		if (!isWithinAllowedRoots(resolvedPdf, allowedRoots)) {
+			return Response.json({ error: "Access denied: path is outside project root" }, { status: 403 });
+		}
+		try {
+			const file = Bun.file(resolvedPdf);
+			if (await file.exists()) {
+				const params = new URLSearchParams({ path: resolvedPdf });
+				if (resolvedBase) params.set("base", resolvedBase);
+				return Response.json({
+					renderAs: "pdf",
+					filepath: resolvedPdf,
+					pdf: {
+						url: `/api/pdf?${params.toString()}`,
+						annotationsUrl: `/api/pdf/annotations?${params.toString()}`,
+					},
+				});
+			}
+		} catch { /* fall through */ }
+		return Response.json({ error: `File not found: ${requestedPath}` }, { status: 404 });
+	}
+
+	// HTML files: resolve directly (not via resolveMarkdownFile which only handles .md/.mdx)
 	if (/\.html?$/i.test(requestedPath)) {
 		const resolvedHtml = resolveUserPath(requestedPath, resolvedBase || projectRoot);
 		if (!isWithinAllowedRoots(resolvedHtml, allowedRoots)) {
@@ -653,7 +680,7 @@ export async function handleObsidianDoc(req: Request): Promise<Response> {
 // the user's configured extra markdown extensions (#1307), which the shared
 // resolver reads from config.json on first use.
 function includeWorkspaceFile(relativePath: string, _change: WorkspaceFileChange): boolean {
-	return getAnnotatableDocRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
+	return getAnnotatableTargetRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
 }
 
 type FileBrowserWalkState = {
@@ -687,7 +714,7 @@ async function walkFileBrowserFiles(dir: string, root: string, state: FileBrowse
 		if (entry.isDirectory()) {
 			if (isFileBrowserExcludedPath(relativePath)) continue;
 			await walkFileBrowserFiles(fullPath, root, state);
-		} else if (entry.isFile() && getAnnotatableDocRegex().test(entry.name)) {
+		} else if (entry.isFile() && getAnnotatableTargetRegex().test(entry.name)) {
 			if (isFileBrowserExcludedPath(relativePath)) continue;
 			addFileBrowserFile(state, relativePath);
 		}

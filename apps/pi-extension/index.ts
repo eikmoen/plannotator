@@ -111,8 +111,8 @@ async function loadAnnotateCommandModules() {
 		hasMarkdownFiles: resolveFile.hasMarkdownFiles,
 		resolveUserPath: resolveFile.resolveUserPath,
 		isAnnotatableTextPath: resolveFile.isAnnotatableTextPath,
-		getAnnotatableDocRegex: resolveFile.getAnnotatableDocRegex,
-		getAnnotatableExtensionsHint: resolveFile.getAnnotatableExtensionsHint,
+		getAnnotatableTargetRegex: resolveFile.getAnnotatableTargetRegex,
+		getAnnotatableTargetExtensionsHint: resolveFile.getAnnotatableTargetExtensionsHint,
 		MAX_ANNOTATABLE_FILE_BYTES: resolveFile.MAX_ANNOTATABLE_FILE_BYTES,
 		FILE_BROWSER_EXCLUDED: referenceCommon.FILE_BROWSER_EXCLUDED,
 	};
@@ -728,8 +728,8 @@ export default function plannotator(pi: ExtensionAPI): void {
 				resolveAtReference,
 				resolveUserPath,
 				isAnnotatableTextPath,
-				getAnnotatableDocRegex,
-				getAnnotatableExtensionsHint,
+				getAnnotatableTargetRegex,
+				getAnnotatableTargetExtensionsHint,
 				MAX_ANNOTATABLE_FILE_BYTES,
 			} = await loadAnnotateCommandModules();
 			// Split known annotate flags from the path. --json is silently
@@ -744,7 +744,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 				return;
 			}
 			if (!filePath) {
-				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.txt | file.html | https://... | folder/> [--markdown] [--no-jina] [--app] [--static] [--gate] [--json]", "error");
+				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.pdf | file.html | https://... | folder/> [--markdown] [--no-jina] [--app] [--static] [--gate] [--json]", "error");
 				return;
 			}
 
@@ -797,6 +797,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			let sourceConverted = false;
 			let isFolder = false;
 			let liveTargetUrl: string | undefined;
+			let renderPdf = false;
 
 			// --- URL annotation ---
 			const isUrl = /^https?:\/\//i.test(filePath);
@@ -901,14 +902,19 @@ export default function plannotator(pi: ExtensionAPI): void {
 				}
 
 				if (isFolder) {
-					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, getAnnotatableDocRegex())) {
-						ctx.ui.notify(`No annotatable files (markdown, plain-text, config, or HTML) found in ${absolutePath}`, "error");
+					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, getAnnotatableTargetRegex())) {
+						ctx.ui.notify(`No annotatable files (markdown, plain-text, config, HTML, or PDF) found in ${absolutePath}`, "error");
 						return;
 					}
 					markdown = "";
 					folderPath = absolutePath;
 					mode = "annotate-folder";
 					ctx.ui.notify(`Opening annotation UI for folder ${filePath}...`, "info");
+				} else if (/\.pdf$/i.test(absolutePath)) {
+					markdown = "";
+					renderPdf = true;
+					sourceInfo = basename(absolutePath);
+					ctx.ui.notify(`Opening PDF annotation UI for ${filePath}...`, "info");
 				} else if (/\.html?$/i.test(absolutePath)) {
 					const html = readFileSync(absolutePath, "utf-8");
 					const renderHtmlForFile = !renderMarkdownFlag;
@@ -924,7 +930,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				} else {
 					if (!isAnnotatableTextPath(absolutePath)) {
-						ctx.ui.notify(`File type not supported. Supported types: ${getAnnotatableExtensionsHint()}`, "error");
+						ctx.ui.notify(`File type not supported. Supported types: ${getAnnotatableTargetExtensionsHint()}`, "error");
 						return;
 					}
 					if (statSync(absolutePath).size > MAX_ANNOTATABLE_FILE_BYTES) {
@@ -954,6 +960,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					renderMarkdownFlag,
 					undefined,
 					liveTargetUrl,
+					renderPdf,
 				);
 				ctx.ui.notify(sessionOpenedMessage("Annotation opened", session.url), "info");
 				void session

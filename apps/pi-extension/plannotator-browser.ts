@@ -665,6 +665,8 @@ export async function startMarkdownAnnotationSession(
 	 * proxy. The bridge sources are loaded here from the vendored
 	 * bridge-script module, mirroring how the Bun CLI supplies them. */
 	liveTargetUrl?: string,
+	/** Binary PDF surface; prevents any UTF-8 fallback read of filePath. */
+	renderPdf = false,
 ): Promise<BrowserDecisionSession<{ feedback: string; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages" }>> {
 	if (!ctx.hasUI) {
 		throw new Error("Plannotator annotation browser is unavailable in this session.");
@@ -691,7 +693,7 @@ export async function startMarkdownAnnotationSession(
 	}
 
 	let resolvedMarkdown = markdown;
-	if (!renderHtml && !resolvedMarkdown.trim() && existsSync(filePath)) {
+	if (!renderHtml && !renderPdf && !resolvedMarkdown.trim() && existsSync(filePath)) {
 		try {
 			const fileStat = statSync(filePath);
 			if (!fileStat.isDirectory()) {
@@ -717,6 +719,7 @@ export async function startMarkdownAnnotationSession(
 		clientLeaseSupported: gate === true && !isRemoteSession(),
 		rawHtml,
 		renderHtml,
+		renderPdf,
 		convertHtml,
 		htmlContent: planHtmlContent,
 		sharingEnabled: resolveSharingEnabled(loadConfig()),

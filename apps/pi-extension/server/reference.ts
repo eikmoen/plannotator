@@ -38,6 +38,7 @@ import {
 	isWithinProjectRoot,
 	warmFileListCache,
 	getAnnotatableDocRegex,
+	getAnnotatableTargetRegex,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "../generated/resolve-file.ts";
@@ -308,7 +309,7 @@ function jsonDoc(
  * dirs. The default matcher is resolved per call, not captured at module load:
  * it includes the user's configured extra markdown extensions (#1307).
  */
-function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = getAnnotatableDocRegex()): void {
+function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = getAnnotatableTargetRegex()): void {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
@@ -330,7 +331,7 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 }
 
 function includeWorkspaceFile(relativePath: string, _change: WorkspaceFileChange): boolean {
-	return getAnnotatableDocRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
+	return getAnnotatableTargetRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
 }
 
 /** Serve a linked markdown document. Uses shared resolveMarkdownFile for parity with Bun server. */
@@ -397,8 +398,33 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 		}
 	}
 
-	// HTML files: resolve directly (not via resolveMarkdownFile which only handles .md/.mdx)
 	const projectRoot = allowedRoots[0];
+
+	// PDFs return session-bound stream/sidecar URLs and never enter the UTF-8 path.
+	if (/\.pdf$/i.test(requestedPath)) {
+		const resolvedPdf = resolveUserPath(requestedPath, resolvedBase || projectRoot);
+		if (!isWithinAllowedRoots(resolvedPdf, allowedRoots)) {
+			json(res, { error: "Access denied: path is outside project root" }, 403);
+			return;
+		}
+		if (!existsSync(resolvedPdf) || !statSync(resolvedPdf).isFile()) {
+			json(res, { error: `File not found: ${requestedPath}` }, 404);
+			return;
+		}
+		const params = new URLSearchParams({ path: resolvedPdf });
+		if (resolvedBase) params.set("base", resolvedBase);
+		json(res, {
+			renderAs: "pdf",
+			filepath: resolvedPdf,
+			pdf: {
+				url: `/api/pdf?${params.toString()}`,
+				annotationsUrl: `/api/pdf/annotations?${params.toString()}`,
+			},
+		});
+		return;
+	}
+
+	// HTML files: resolve directly (not via resolveMarkdownFile which only handles .md/.mdx)
 	if (/\.html?$/i.test(requestedPath)) {
 		const resolvedHtml = resolveUserPath(requestedPath, resolvedBase || projectRoot);
 		if (!isWithinAllowedRoots(resolvedHtml, allowedRoots)) {

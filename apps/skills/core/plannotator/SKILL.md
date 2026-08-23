@@ -16,7 +16,7 @@ This skill is the knowledge layer. The `plannotator-review`, `plannotator-annota
 | Review a plan you produced | Nothing. Plan review opens automatically on plan exit via hooks. Never run bare `plannotator` yourself. |
 | Review current code changes | `plannotator review` |
 | Review a GitHub PR or GitLab MR | `plannotator review <PR_URL>` |
-| Annotate a markdown, text, config, or HTML file | `plannotator annotate <file>` |
+| Annotate a markdown, PDF, text, config, or HTML file | `plannotator annotate <file>` |
 | Annotate a web page | `plannotator annotate <https-url>` |
 | Annotate a running local app (dev server) | `plannotator annotate <http://localhost:PORT/>` |
 | Pick a file to annotate from a folder | `plannotator annotate <folder/>` |
@@ -56,7 +56,7 @@ Reviews local VCS changes, or a pull request when a URL is given. Feedback and a
 plannotator annotate <target> [--markdown] [--no-jina] [--app | --static] [--render-html] [--tailscale] [--gate] [--json] [--hook]
 ```
 
-Opens one document, page, or app in the annotation UI and returns the human's annotations on stdout.
+Opens one Markdown/PDF/text/HTML document, web page, or app in the annotation UI and returns the human's annotations on stdout. PDF sessions persist editable sidecars beside the source and leave PDF bytes unchanged on ordinary saves.
 
 Targets:
 

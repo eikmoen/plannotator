@@ -282,6 +282,7 @@ Input type detected:
              Extra extensions listed in `markdownExtensions` (config-only setting,
              e.g. `.livemd`) join this set and render as markdown, frontmatter stripped.
   .html/.htm → file read, rendered as raw HTML by default (or converted to markdown with --markdown)
+  .pdf       → binary PDF surface; annotations persist in compatible Markdown/JSON sidecars and ordinary saves leave PDF bytes unchanged
   https://   → fetched via Jina Reader (default) or fetch+Turndown (--no-jina)
   http://localhost:* (also 127.x and [::1])
              → LIVE app annotation by default when a quick probe returns HTML:
@@ -461,6 +462,8 @@ During normal plan review, an Archive sidebar tab provides the same browsing via
 | `/api/plan/version`   | GET    | Fetch a specific stored version of the annotated file (`?v=N`) |
 | `/api/plan/versions`  | GET    | List all stored versions of the annotated file |
 | `/api/feedback`       | POST   | Submit annotations (body: feedback, annotations) |
+| `/api/pdf`            | GET    | Stream the session PDF with single-range support (PDF sessions only) |
+| `/api/pdf/annotations`| GET/POST | Load or atomically save compatible PDF annotation sidecars (PDF sessions only) |
 | `/api/approve`        | POST   | Approve without feedback (review-gate UX, `--gate`) |
 | `/api/exit`           | POST   | Close session without feedback |
 | `/api/save-notes`     | POST   | Save to external note apps (Obsidian, Bear, Octarine) |

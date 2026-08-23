@@ -8,6 +8,7 @@ import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, e
 import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/utils/skillCatalog';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
+import { PdfAnnotatorView } from '@plannotator/ui/components/PdfAnnotatorView';
 import { MarkdownEditor, type MarkdownEditorHandle } from '@plannotator/ui/components/MarkdownEditor';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { DocumentAIChatPanel } from '@plannotator/ui/components/ai/DocumentAIChatPanel';
@@ -472,6 +473,9 @@ const App: React.FC = () => {
   const [feedbackTemplates, setFeedbackTemplates] = useState<AnnotateFeedbackTemplates | null>(null);
   const [sourceConverted, setSourceConverted] = useState(false);
   const [renderAs, setRenderAs] = useState<'markdown' | 'html'>('markdown');
+  const [pdfSurface, setPdfSurface] = useState<{ url: string; annotationsUrl: string } | null>(null);
+  const [pdfDirty, setPdfDirty] = useState(false);
+  const isPdfSurface = pdfSurface !== null;
   // HTML plans render edge-to-edge (full-viewport) instead of in the centered,
   // card-chromed markdown column. Branch the document-area containers on this.
   const isHtmlSurface = renderAs === 'html';
@@ -1472,7 +1476,20 @@ const App: React.FC = () => {
 
   const handleFileBrowserSelect = React.useCallback(async (absolutePath: string, dirPath: string): Promise<void> => {
     const normalizedAbsolutePath = normalizeBrowserPath(absolutePath);
+    if (isPdfSurface && pdfDirty && !window.confirm('Discard unsaved PDF annotation changes?')) return;
+    setPdfDirty(false);
     const dirState = fileBrowser.dirs.find(d => d.path === dirPath);
+    if (/\.pdf$/i.test(normalizedAbsolutePath) && !dirState?.isVault) {
+      const params = new URLSearchParams({ path: absolutePath, base: dirPath });
+      fileBrowser.setActiveFile(absolutePath);
+      setIsPanelOpen(false);
+      setPdfSurface({
+        url: `/api/pdf?${params.toString()}`,
+        annotationsUrl: `/api/pdf/annotations?${params.toString()}`,
+      });
+      return;
+    }
+    setPdfSurface(null);
     const normalizedDirPath = normalizeBrowserPath(dirPath);
     const dirPrefix = normalizedDirPath === "/" || /^[A-Za-z]:\/$/.test(normalizedDirPath)
       ? normalizedDirPath
@@ -1520,7 +1537,7 @@ const App: React.FC = () => {
       : (path: string) => `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}&doc=1${convertHtml ? '&convert=1' : ''}`;
     fileBrowser.setActiveFile(absolutePath);
     await linkedDocHook.open(absolutePath, buildUrl, 'files');
-  }, [editableDocuments, linkedDocHook, fileBrowser, convertHtml, isEditingMarkdown]);
+  }, [editableDocuments, linkedDocHook, fileBrowser, convertHtml, isEditingMarkdown, isPdfSurface, pdfDirty]);
 
   // Route linked doc opens through the correct endpoint based on current context
   const handleOpenLinkedDoc = React.useCallback((docPath: string) => {
@@ -1552,6 +1569,8 @@ const App: React.FC = () => {
 
   // Wrap linked doc back to also clear file browser active file
   const handleLinkedDocBack = React.useCallback(() => {
+    setPdfDirty(false);
+    setPdfSurface(null);
     linkedDocHook.back();
     if (isEditingMarkdown) {
       setIsEditingMarkdown(false);
@@ -2787,13 +2806,14 @@ const App: React.FC = () => {
   // so there is no input method or annotation mode left to switch.
   const toolstripVisible = useMemo(
     () =>
-      !goalSetupMode && !isPlanDiffActive && !archive.archiveMode && !isEditingMarkdown && !isHtmlSurface
+      !goalSetupMode && !isPlanDiffActive && !archive.archiveMode && !isEditingMarkdown && !isHtmlSurface && !isPdfSurface
       && (!isCompactTouchLayout || !(annotateSource === 'folder' && !markdown && !linkedDocHook.isActive)),
     [
       annotateSource,
       archive.archiveMode,
       goalSetupMode,
       isHtmlSurface,
+      isPdfSurface,
       isCompactTouchLayout,
       isEditingMarkdown,
       isPlanDiffActive,
@@ -2839,7 +2859,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: 'html' | 'markdown'; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; markdownExtensions?: string[]; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: 'html' | 'markdown' | 'pdf'; pdf?: { url: string; annotationsUrl: string }; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; markdownExtensions?: string[]; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Extra extensions the user registered as markdown (#1307) — the
@@ -2875,6 +2895,12 @@ const App: React.FC = () => {
             origin: new URL(data.appUrl).origin,
             token: data.liveToken,
           });
+        } else if (data.renderAs === 'pdf' && data.pdf) {
+          setIsPanelOpen(false);
+          setPdfDirty(false);
+          setPdfSurface(data.pdf);
+          setMarkdown('');
+          setSharingEnabled(false);
         } else if (data.renderAs === 'html' && data.rawHtml) {
           setRenderAs('html');
           setRawHtml(data.rawHtml);
@@ -4477,6 +4503,7 @@ const App: React.FC = () => {
   };
 
   const handleHeaderAnnotateExit = useCallback(() => {
+    if (pdfDirty && !window.confirm('Close without saving PDF annotation changes?')) return;
     const close = () => {
       if (hasFeedbackToSend) {
         setExitWarningAction('close');
@@ -4487,7 +4514,7 @@ const App: React.FC = () => {
     };
     if (maybeConfirmUnsavedSourceFileEdits('close', close)) return;
     close();
-  }, [hasFeedbackToSend, maybeConfirmUnsavedSourceFileEdits]);
+  }, [hasFeedbackToSend, maybeConfirmUnsavedSourceFileEdits, pdfDirty]);
 
   const handleHeaderFeedback = useCallback(() => {
     const sendFeedback = () => {
@@ -5041,8 +5068,9 @@ const App: React.FC = () => {
           origin={origin}
           isSubmitting={isSubmitting}
           isExiting={isExiting}
-          isPanelOpen={isRightPanelVisible && rightSidebarTab === 'annotations'}
-          aiAvailable={canUseAskAI}
+          isPanelOpen={!isPdfSurface && isRightPanelVisible && rightSidebarTab === 'annotations'}
+          documentPanelAvailable={!isPdfSurface}
+          aiAvailable={!isPdfSurface && canUseAskAI}
           isAIChatOpen={isRightPanelVisible && rightSidebarTab === 'ai'}
           aiHasMessages={visibleAIMessages.length > 0}
           hasAnyAnnotations={hasAnyAnnotations || hasDirectEdits || hasSavedFileChanges}
@@ -5244,7 +5272,7 @@ const App: React.FC = () => {
           {/* Document Area */}
           <OverlayScrollArea
             element="main"
-            className={`flex-1 min-w-0 ${isHtmlSurface ? 'bg-background' : `${gridEnabled ? "bg-grid " : "bg-card "}${!goalSetupMode && !sidebar.isOpen && !isLeftAgentTerminalVisible && wideModeType === null ? 'lg:pl-[30px]' : ''}`}`}
+            className={`flex-1 min-w-0 ${isHtmlSurface || isPdfSurface ? 'bg-background' : `${gridEnabled ? "bg-grid " : "bg-card "}${!goalSetupMode && !sidebar.isOpen && !isLeftAgentTerminalVisible && wideModeType === null ? 'lg:pl-[30px]' : ''}`}`}
             data-print-region="document"
             overflowX={usesDocumentScroll ? 'visible' : 'hidden'}
             overflowY={usesDocumentScroll ? 'visible' : 'auto'}
@@ -5260,7 +5288,7 @@ const App: React.FC = () => {
               cancelText="Dismiss"
               showCancel
             />
-            <div ref={planAreaRef} className={`${isHtmlSurface ? 'h-full flex flex-col' : 'min-h-full flex flex-col items-center px-2 py-3 md:px-10 md:py-8 xl:px-16'} relative z-10`}>
+            <div ref={planAreaRef} className={`${isHtmlSurface || isPdfSurface ? 'h-full flex flex-col' : 'min-h-full flex flex-col items-center px-2 py-3 md:px-10 md:py-8 xl:px-16'} relative z-10`}>
               {/* Sticky header lane — ghost bar that pins the toolstrip +
                   badges at top: 12px once the user scrolls. Invisible at top
                   of doc; original toolstrip/badges remain the source of
@@ -5268,7 +5296,7 @@ const App: React.FC = () => {
                   sticky actions are disabled. remountToken re-anchors the
                   ResizeObserver when Viewer swaps content (linked docs or
                   message switches). */}
-              {!usesDocumentScroll && !goalSetupMode && !isPlanDiffActive && !isHtmlSurface && !archive.archiveMode && !isEditingMarkdown && uiPrefs.stickyActionsEnabled && (
+              {!usesDocumentScroll && !goalSetupMode && !isPlanDiffActive && !isHtmlSurface && !isPdfSurface && !archive.archiveMode && !isEditingMarkdown && uiPrefs.stickyActionsEnabled && (
                 <StickyHeaderLane
                   inputMethod={inputMethod}
                   onInputMethodChange={handleInputMethodChange}
@@ -5351,15 +5379,15 @@ const App: React.FC = () => {
                 </div>
               )}
               {/* Folder annotation empty state — shown before user picks a file */}
-              {annotateSource === 'folder' && !markdown && !linkedDocHook.isActive && !goalSetupMode && (
+              {annotateSource === 'folder' && !markdown && !linkedDocHook.isActive && !isPdfSurface && !goalSetupMode && (
                 <FolderAnnotationEmptyState
                   compactTouchLayout={isCompactTouchLayout}
                   onChooseFile={() => openSidebarTab('files')}
                 />
               )}
               {/* Normal Plan View — always mounted, hidden during diff mode */}
-              <div className={`w-full relative ${isHtmlSurface ? 'flex-1 flex flex-col' : `${isCompactTouchLayout && isEditingMarkdown ? 'flex flex-col items-center' : 'flex justify-center'}${isEditingMarkdown ? ' flex-1 min-h-0' : ''}`}`} style={{ display: goalSetupMode || (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) ? 'none' : undefined }}>
-                {!isCompactTouchLayout && (canUseWideMode || canEditMarkdown) && !isPlanDiffActive && !archive.archiveMode && !isHtmlSurface && (
+              <div className={`w-full relative ${isHtmlSurface || isPdfSurface ? 'flex-1 flex flex-col' : `${isCompactTouchLayout && isEditingMarkdown ? 'flex flex-col items-center' : 'flex justify-center'}${isEditingMarkdown ? ' flex-1 min-h-0' : ''}`}`} style={{ display: goalSetupMode || (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive && !isPdfSurface) ? 'none' : undefined }}>
+                {!isCompactTouchLayout && (canUseWideMode || canEditMarkdown) && !isPlanDiffActive && !archive.archiveMode && !isHtmlSurface && !isPdfSurface && (
                   <div
                     data-print-hide
                     className="absolute -top-5 left-0 right-0 mx-auto w-full flex justify-end pointer-events-none"
@@ -5484,7 +5512,15 @@ const App: React.FC = () => {
                     onExit={handleEditExitClick}
                   />
                 )}
-                {renderAs === 'html' ? (
+                {isPdfSurface ? (
+                  <PdfAnnotatorView
+                    key={pdfSurface.url}
+                    pdfUrl={pdfSurface.url}
+                    annotationsUrl={pdfSurface.annotationsUrl}
+                    onBack={annotateSource === 'folder' ? handleLinkedDocBack : undefined}
+                    onDirtyChange={setPdfDirty}
+                  />
+                ) : renderAs === 'html' ? (
                   <HtmlViewer
                     key={(liveApp ? 'live-app' : linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan') + (isPlanDiffActive && htmlDiffHtml ? ':diff' : '')}
                     ref={viewerRef}
@@ -5627,14 +5663,14 @@ const App: React.FC = () => {
               ancestor (`contents` = no layout box). */}
           <div className="contents group/sidebar">
           {/* Resize Handle */}
-          {isRightPanelVisible && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || canUseAskAI) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" hideHoverTrack tooltip={RESIZE_HANDLE_TOOLTIP} onCollapse={() => setIsPanelOpen(false)} />}
+          {!isPdfSurface && isRightPanelVisible && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || canUseAskAI) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" hideHoverTrack tooltip={RESIZE_HANDLE_TOOLTIP} onCollapse={() => setIsPanelOpen(false)} />}
 
           {/* Annotation Panel */}
           {renderAnnotationPanel(
             'panel',
-            isRightPanelVisible && rightSidebarTab === 'annotations' && wideModeType === null && !goalSetupMode,
+            !isPdfSurface && isRightPanelVisible && rightSidebarTab === 'annotations' && wideModeType === null && !goalSetupMode,
           )}
-          {isRightPanelVisible && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAskAI && (
+          {!isPdfSurface && isRightPanelVisible && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAskAI && (
             <aside
               data-annotation-panel="true"
               className={`border-l border-border/50 bg-card flex flex-col flex-shrink-0 ${

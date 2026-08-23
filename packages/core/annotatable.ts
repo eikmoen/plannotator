@@ -45,6 +45,9 @@ const BUILTIN_TEXT_PATTERN =
 const BUILTIN_DOC_PATTERN =
 	String.raw`(?:\.(?:mdx?|txt|html?|ya?ml|jsonc?|json5|toml|ini|cfg|conf|properties|csv|tsv|log|xml)|\.env\.example)`;
 
+/** PDF is a binary annotate target and must never enter the UTF-8 document path. */
+const BUILTIN_PDF_PATTERN = String.raw`(?:\.pdf)`;
+
 /** Plain-text file extensions annotate accepts as markdown-rendered text (no HTML). */
 export const ANNOTATABLE_TEXT_REGEX = new RegExp(`${BUILTIN_TEXT_PATTERN}$`, "i");
 
@@ -54,6 +57,12 @@ export const ANNOTATABLE_TEXT_REGEX = new RegExp(`${BUILTIN_TEXT_PATTERN}$`, "i"
  * discovery and the file-browser listing.
  */
 export const ANNOTATABLE_DOC_REGEX = new RegExp(`${BUILTIN_DOC_PATTERN}$`, "i");
+
+/** Everything folder discovery may offer: text/HTML documents plus binary PDF. */
+export const ANNOTATABLE_TARGET_REGEX = new RegExp(
+	`(?:${BUILTIN_DOC_PATTERN}|${BUILTIN_PDF_PATTERN})$`,
+	"i",
+);
 
 /** Extensions a user may never register through config (see module comment). */
 export const DENIED_MARKDOWN_EXTENSIONS = [".env"] as const;
@@ -144,6 +153,18 @@ export function buildAnnotatableDocRegex(extra: readonly string[] = []): RegExp 
 	return buildRegex(BUILTIN_DOC_PATTERN, extra);
 }
 
+/** Folder/target matcher including binary PDF and configured markdown extensions. */
+export function buildAnnotatableTargetRegex(extra: readonly string[] = []): RegExp {
+	if (extra.length === 0) return ANNOTATABLE_TARGET_REGEX;
+	const key = `target::${extra.join(",")}`;
+	const cached = regexCache.get(key);
+	if (cached) return cached;
+	const alternation = [BUILTIN_DOC_PATTERN, BUILTIN_PDF_PATTERN, ...extra.map(escapeRegExp)].join("|");
+	const regex = new RegExp(`(?:${alternation})$`, "i");
+	regexCache.set(key, regex);
+	return regex;
+}
+
 /** True when annotate can open `input` as a plain-text (markdown-rendered) document. */
 export function isAnnotatableTextPath(input: string, extra: readonly string[] = []): boolean {
 	return buildAnnotatableTextRegex(extra).test(input.trim());
@@ -152,6 +173,29 @@ export function isAnnotatableTextPath(input: string, extra: readonly string[] = 
 /** True when annotate can open `input` at all (plain text or raw HTML). */
 export function isAnnotatableDocPath(input: string, extra: readonly string[] = []): boolean {
 	return buildAnnotatableDocRegex(extra).test(input.trim());
+}
+
+/** True only for the binary PDF surface. */
+export function isAnnotatablePdfPath(input: string): boolean {
+	return new RegExp(`${BUILTIN_PDF_PATTERN}$`, "i").test(input.trim());
+}
+
+/** True for every target folder discovery and direct annotate may offer. */
+export function isAnnotatableTargetPath(input: string, extra: readonly string[] = []): boolean {
+	return buildAnnotatableTargetRegex(extra).test(input.trim());
+}
+
+export type AnnotatableTargetKind = "markdown" | "html" | "pdf";
+
+export function classifyAnnotatableTarget(
+	input: string,
+	extra: readonly string[] = [],
+): AnnotatableTargetKind | null {
+	const trimmed = input.trim();
+	if (isAnnotatablePdfPath(trimmed)) return "pdf";
+	if (/\.html?$/i.test(trimmed)) return "html";
+	if (isAnnotatableTextPath(trimmed, extra)) return "markdown";
+	return null;
 }
 
 /** True when `input` is annotatable only because of a configured extra extension. */
@@ -173,6 +217,11 @@ export function buildAnnotatableExtensionsHint(extra: readonly string[] = []): s
 	return extra.length === 0
 		? ANNOTATABLE_EXTENSIONS_HINT
 		: `${ANNOTATABLE_EXTENSIONS_HINT}, ${extra.join(", ")}`;
+}
+
+/** Human-readable accepted target set, including the separate binary PDF surface. */
+export function buildAnnotatableTargetExtensionsHint(extra: readonly string[] = []): string {
+	return `${buildAnnotatableExtensionsHint(extra)}, .pdf`;
 }
 
 /**
