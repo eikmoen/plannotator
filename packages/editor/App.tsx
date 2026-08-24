@@ -209,6 +209,7 @@ import {
   canEditLinkedSourceDocument,
   normalizeBrowserPath,
   pathIsInsideDir,
+  tracksLinkedSourceDocuments,
 } from './sourceDocumentPaths';
 import { pickRestoredSingleFileDraftToDisplay } from './draftRestoreSelection';
 
@@ -1144,7 +1145,7 @@ const App: React.FC = () => {
   }, [editableDocuments]);
 
   const handleLinkedDocumentLoaded = useCallback((doc: { markdown?: string; filepath?: string; renderAs?: 'markdown' | 'html'; sourceSave?: SourceSaveCapability }) => {
-    if (annotateSource !== 'folder') {
+    if (!tracksLinkedSourceDocuments({ annotateSource, pdfNavigationMode })) {
       if (activeEditableDocument?.sourceSave?.enabled) {
         suspendedRootEditableKeyRef.current = activeEditableDocument.key;
         editableDocuments.setActiveKey(null);
@@ -1170,7 +1171,7 @@ const App: React.FC = () => {
     }
 
     return currentText;
-  }, [activeEditableDocument, annotateSource, editableDocuments, isEditingMarkdown]);
+  }, [activeEditableDocument, annotateSource, editableDocuments, isEditingMarkdown, pdfNavigationMode]);
 
   const handleLinkedDocumentActivated = useCallback(() => {
     if (!compactPendingFileRef.current) return;

@@ -9,6 +9,13 @@ export {
   pathIsInsideDir,
 } from '@plannotator/shared/browser-paths';
 
+export function tracksLinkedSourceDocuments(options: {
+  annotateSource: 'file' | 'message' | 'folder' | null;
+  pdfNavigationMode: boolean;
+}): boolean {
+  return options.annotateSource === 'folder' || options.pdfNavigationMode;
+}
+
 export function canEditLinkedSourceDocument(options: {
   linked: boolean;
   sourceSaveEnabled: boolean;
@@ -16,9 +23,7 @@ export function canEditLinkedSourceDocument(options: {
   pdfNavigationMode: boolean;
 }): boolean {
   if (!options.linked) return true;
-  return options.sourceSaveEnabled && (
-    options.annotateSource === 'folder' || options.pdfNavigationMode
-  );
+  return options.sourceSaveEnabled && tracksLinkedSourceDocuments(options);
 }
 
 export interface SourceWatchSubscription {

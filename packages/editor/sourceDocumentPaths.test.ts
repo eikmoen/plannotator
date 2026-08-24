@@ -5,6 +5,7 @@ import {
   dirnameBrowserPath,
   normalizeBrowserPath,
   pathIsInsideDir,
+  tracksLinkedSourceDocuments,
 } from './sourceDocumentPaths';
 
 describe('source document path helpers', () => {
@@ -31,6 +32,12 @@ describe('source document path helpers', () => {
     expect(pathIsInsideDir('C:\\repo\\docs\\a.md', 'C:/repo/docs')).toBe(true);
     expect(pathIsInsideDir('C:\\note.md', 'C:/')).toBe(true);
     expect(pathIsInsideDir('/repo/docs/a.md', '')).toBe(false);
+  });
+
+  test('tracks linked source documents for folder and PDF-navigation sessions', () => {
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'file', pdfNavigationMode: false })).toBe(false);
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'file', pdfNavigationMode: true })).toBe(true);
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'folder', pdfNavigationMode: false })).toBe(true);
   });
 
   test('allows linked Markdown editing for folder and PDF-navigation sessions only', () => {
