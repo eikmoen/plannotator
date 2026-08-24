@@ -63,6 +63,13 @@ export interface PdfAnnotation {
   comment: PdfAnnotationComment;
 }
 
+export interface PdfGlobalComment {
+  id: string;
+  text: string;
+  author?: string;
+  created_at?: string;
+}
+
 export interface PdfPageMapping {
   mode?: "offset" | "labels";
   pdf_page_1_is?: number | string;
@@ -86,6 +93,8 @@ export interface PdfAnnotationDocument {
     displayName?: string;
   };
   annotations: PdfAnnotation[];
+  /** Document-level notes with no page or text-selection anchor. */
+  globalComments: PdfGlobalComment[];
   pageMapping?: PdfPageMapping;
   labels: Record<PdfAnnotationColor, string>;
 }

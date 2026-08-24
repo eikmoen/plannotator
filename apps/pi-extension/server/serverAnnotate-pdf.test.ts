@@ -68,14 +68,18 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Pi PDF annotate server",
     const save = await fetch(`${server.url}/api/pdf/annotations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ annotations: [annotation()] }),
+      body: JSON.stringify({
+        annotations: [annotation()],
+        globalComments: [{ id: "global-one", text: "Whole-document note", author: "Eik" }],
+      }),
     });
     expect(save.status).toBe(200);
-    expect(await save.json()).toMatchObject({ ok: true, count: 1 });
+    expect(await save.json()).toMatchObject({ ok: true, count: 1, globalCommentCount: 1 });
     expect(sha256(readFileSync(pdfPath))).toBe(before);
 
     const loaded = await fetch(`${server.url}/api/pdf/annotations`).then((response) => response.json());
     expect(loaded.annotations.map(({ id }: { id: string }) => id)).toEqual(["pi-one"]);
+    expect(loaded.globalComments).toEqual([{ id: "global-one", text: "Whole-document note", author: "Eik" }]);
 
     const tree = await fetch(`${server.url}/api/reference/files?dirPath=${encodeURIComponent(directory)}`).then((response) => response.json());
     expect(JSON.stringify(tree.tree)).toContain("source.pdf");

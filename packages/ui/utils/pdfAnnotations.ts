@@ -2,6 +2,7 @@ import type {
   PdfAnnotation,
   PdfAnnotationColor,
   PdfAnnotationDocument,
+  PdfGlobalComment,
 } from '@plannotator/core/pdf-annotations';
 import { AnnotationType, type Annotation } from '../types';
 
@@ -52,6 +53,32 @@ export function pdfAnnotationToAnnotation(
       imported: annotation.imported,
       embedded: annotation.embedded,
     },
+  };
+}
+
+export function pdfGlobalCommentToAnnotation(comment: PdfGlobalComment): Annotation {
+  const parsedCreatedAt = comment.created_at ? Date.parse(comment.created_at) : Number.NaN;
+  return {
+    id: comment.id,
+    blockId: '',
+    startOffset: 0,
+    endOffset: 0,
+    type: AnnotationType.GLOBAL_COMMENT,
+    text: comment.text,
+    originalText: '',
+    createdA: Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : Date.now(),
+    author: comment.author,
+  };
+}
+
+export function applyAnnotationUpdatesToPdfGlobalComment(
+  comment: PdfGlobalComment,
+  updates: Partial<Annotation>,
+): PdfGlobalComment {
+  return {
+    ...comment,
+    text: updates.text ?? comment.text,
+    author: updates.author ?? comment.author,
   };
 }
 

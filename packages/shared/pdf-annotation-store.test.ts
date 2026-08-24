@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PdfAnnotation } from "@plannotator/core/pdf-annotations";
+import type { PdfAnnotation, PdfGlobalComment } from "@plannotator/core/pdf-annotations";
 import {
   describePdfSource,
   loadPdfAnnotationDocument,
@@ -59,6 +59,7 @@ describe("PDF annotation sidecar store", () => {
     const document = loadPdfAnnotationDocument(source);
     expect(document.annotations.map(({ id }) => id)).toEqual(["embedded", "browser"]);
     expect(document.annotations[0].imported).toBe(true);
+    expect(document.globalComments).toEqual([]);
     expect(document.pageMapping?.pdf_page_1_is).toBe(35);
     expect(document.labels.green).toBe("Thesis");
   });
@@ -67,11 +68,18 @@ describe("PDF annotation sidecar store", () => {
     const { pdfPath, pdfBytes, source } = fixture();
     const loaded = loadPdfAnnotationDocument(source);
     const added = { ...annotation("added", 3, "yellow"), label: "Comment" };
-    const saved = savePdfAnnotationDocument(source, [...loaded.annotations, added]);
+    const globalComments: PdfGlobalComment[] = [{
+      id: "global-one",
+      text: "Review the paper's overall framing.",
+      author: "Eik",
+      created_at: "2026-08-24T18:00:00.000Z",
+    }];
+    const saved = savePdfAnnotationDocument(source, [...loaded.annotations, added], globalComments);
     const paths = pdfAnnotationSidecarPaths(source);
 
     expect(hash(readFileSync(pdfPath))).toBe(hash(pdfBytes));
     expect(saved.annotations.map(({ id }) => id)).toEqual(["embedded", "browser", "added"]);
+    expect(saved.globalComments).toEqual(globalComments);
     const normalized = JSON.parse(readFileSync(paths.normalized, "utf8"));
     expect(normalized.map(({ id }: { id: string }) => id)).toEqual(["browser", "added"]);
     expect(normalized[0].page_label).toBe("36");
@@ -79,8 +87,21 @@ describe("PDF annotation sidecar store", () => {
     const markdown = readFileSync(paths.markdown, "utf8");
     expect(markdown).toContain("Hand-written note.");
     expect(markdown).toContain("<!-- pi-annotate:start -->");
+    expect(markdown).toContain("### Document comments");
+    expect(markdown).toContain("**global comment** — Review the paper's overall framing. _(by Eik)_");
     expect(markdown).toContain("**comment** — [[source.pdf#page=3|source.pdf, p. 37]]");
     expect(JSON.parse(readFileSync(paths.hidden, "utf8"))).toEqual([]);
+    expect(JSON.parse(readFileSync(paths.global, "utf8"))).toEqual(globalComments);
+  });
+
+  test("preserves global comments when an older client saves annotations only", () => {
+    const { source } = fixture();
+    const initial: PdfGlobalComment[] = [{ id: "global-one", text: "Keep this note.", author: "Eik" }];
+    const first = savePdfAnnotationDocument(source, loadPdfAnnotationDocument(source).annotations, initial);
+    expect(first.globalComments).toEqual(initial);
+
+    const legacySave = savePdfAnnotationDocument(source, first.annotations);
+    expect(legacySave.globalComments).toEqual(initial);
   });
 
   test("records a removed imported annotation as hidden without normalizing it", () => {

@@ -65,7 +65,7 @@ import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
 import { describePdfSource, loadPdfAnnotationDocument, savePdfAnnotationDocument } from "@plannotator/shared/pdf-annotation-store";
 import { parsePdfByteRange } from "@plannotator/shared/pdf-http";
-import type { PdfAnnotation } from "@plannotator/shared/pdf-annotations";
+import type { PdfAnnotation, PdfGlobalComment } from "@plannotator/shared/pdf-annotations";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -671,13 +671,26 @@ export async function startAnnotateServer(
                 return Response.json({ error: "PDF annotation payload too large" }, { status: 413 });
               }
               try {
-                const body = await req.json() as { annotations?: unknown } | unknown[];
+                const body = await req.json() as { annotations?: unknown; globalComments?: unknown } | unknown[];
                 const annotations = Array.isArray(body) ? body : body.annotations;
+                const globalComments = Array.isArray(body) ? undefined : body.globalComments;
                 if (!Array.isArray(annotations)) {
                   return Response.json({ error: "annotations must be an array" }, { status: 400 });
                 }
-                const document = savePdfAnnotationDocument(selectedPdf, annotations as PdfAnnotation[]);
-                return Response.json({ ok: true, count: document.annotations.length, document });
+                if (globalComments !== undefined && !Array.isArray(globalComments)) {
+                  return Response.json({ error: "globalComments must be an array" }, { status: 400 });
+                }
+                const document = savePdfAnnotationDocument(
+                  selectedPdf,
+                  annotations as PdfAnnotation[],
+                  globalComments as PdfGlobalComment[] | undefined,
+                );
+                return Response.json({
+                  ok: true,
+                  count: document.annotations.length,
+                  globalCommentCount: document.globalComments.length,
+                  document,
+                });
               } catch (error) {
                 return Response.json(
                   { error: error instanceof Error ? error.message : "Failed to save PDF annotations" },

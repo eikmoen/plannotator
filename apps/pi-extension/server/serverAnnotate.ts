@@ -85,7 +85,7 @@ import {
 import { createAnnotateDecisionSettler } from "../generated/annotate-decision.ts";
 import { describePdfSource, loadPdfAnnotationDocument, savePdfAnnotationDocument } from "../generated/pdf-annotation-store.ts";
 import { parsePdfByteRange } from "../generated/pdf-http.ts";
-import type { PdfAnnotation } from "../generated/pdf-annotations.ts";
+import type { PdfAnnotation, PdfGlobalComment } from "../generated/pdf-annotations.ts";
 
 export interface AnnotateServerResult {
 	port: number;
@@ -651,14 +651,28 @@ export async function startAnnotateServer(options: {
 					return;
 				}
 				try {
-					const body = await parseBody(req) as { annotations?: unknown } | unknown[];
+					const body = await parseBody(req) as { annotations?: unknown; globalComments?: unknown } | unknown[];
 					const annotations = Array.isArray(body) ? body : body.annotations;
+					const globalComments = Array.isArray(body) ? undefined : body.globalComments;
 					if (!Array.isArray(annotations)) {
 						json(res, { error: "annotations must be an array" }, 400);
 						return;
 					}
-					const document = savePdfAnnotationDocument(selectedPdf, annotations as PdfAnnotation[]);
-					json(res, { ok: true, count: document.annotations.length, document });
+					if (globalComments !== undefined && !Array.isArray(globalComments)) {
+						json(res, { error: "globalComments must be an array" }, 400);
+						return;
+					}
+					const document = savePdfAnnotationDocument(
+						selectedPdf,
+						annotations as PdfAnnotation[],
+						globalComments as PdfGlobalComment[] | undefined,
+					);
+					json(res, {
+						ok: true,
+						count: document.annotations.length,
+						globalCommentCount: document.globalComments.length,
+						document,
+					});
 				} catch (error) {
 					json(res, { error: error instanceof Error ? error.message : "Failed to save PDF annotations" }, 400);
 				}

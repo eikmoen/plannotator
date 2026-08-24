@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import type { PdfAnnotation } from '@plannotator/core/pdf-annotations';
-import { applyAnnotationUpdatesToPdf, pdfAnnotationToAnnotation } from './pdfAnnotations';
+import type { PdfAnnotation, PdfGlobalComment } from '@plannotator/core/pdf-annotations';
+import { AnnotationType } from '../types';
+import {
+  applyAnnotationUpdatesToPdf,
+  applyAnnotationUpdatesToPdfGlobalComment,
+  pdfAnnotationToAnnotation,
+  pdfGlobalCommentToAnnotation,
+} from './pdfAnnotations';
 
 const source: PdfAnnotation = {
   id: 'pdf-1',
@@ -38,6 +44,23 @@ describe('PDF native annotation projection', () => {
       pageLabel: '2',
       imported: true,
     }));
+  });
+
+  test('projects and edits document-level comments as native global comments', () => {
+    const sourceComment: PdfGlobalComment = {
+      id: 'pdf-global-1',
+      text: 'Comment on the whole paper.',
+      author: 'Eik',
+      created_at: '2026-08-24T18:00:00.000Z',
+    };
+    const projected = pdfGlobalCommentToAnnotation(sourceComment);
+    expect(projected.type).toBe(AnnotationType.GLOBAL_COMMENT);
+    expect(projected.text).toBe('Comment on the whole paper.');
+    expect(projected.pdfAnchor).toBeUndefined();
+    expect(applyAnnotationUpdatesToPdfGlobalComment(sourceComment, { text: 'Revised overview.' })).toEqual({
+      ...sourceComment,
+      text: 'Revised overview.',
+    });
   });
 
   test('round-trips native panel edits without losing the PDF anchor', () => {

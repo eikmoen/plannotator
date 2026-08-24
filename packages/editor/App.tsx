@@ -9,8 +9,13 @@ import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
 import { PdfAnnotatorView } from '@plannotator/ui/components/PdfAnnotatorView';
-import type { PdfAnnotation, PdfAnnotationDocument } from '@plannotator/core/pdf-annotations';
-import { applyAnnotationUpdatesToPdf, pdfAnnotationToAnnotation } from '@plannotator/ui/utils/pdfAnnotations';
+import type { PdfAnnotation, PdfAnnotationDocument, PdfGlobalComment } from '@plannotator/core/pdf-annotations';
+import {
+  applyAnnotationUpdatesToPdf,
+  applyAnnotationUpdatesToPdfGlobalComment,
+  pdfAnnotationToAnnotation,
+  pdfGlobalCommentToAnnotation,
+} from '@plannotator/ui/utils/pdfAnnotations';
 import { MarkdownEditor, type MarkdownEditorHandle } from '@plannotator/ui/components/MarkdownEditor';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { DocumentAIChatPanel } from '@plannotator/ui/components/ai/DocumentAIChatPanel';
@@ -101,7 +106,7 @@ import {
 } from '@plannotator/ui/components/goal-setup/GoalSetupSurface';
 import type { GoalSetupBundle } from '@plannotator/shared/goal-setup';
 import type { AIContext } from '@plannotator/ai';
-import type { CommentAskAIContext } from '@plannotator/ui/components/CommentPopover';
+import { CommentPopover, type CommentAskAIContext } from '@plannotator/ui/components/CommentPopover';
 import {
   hasSourceSaveConflictSnapshot,
   isSourceSaveFilePath,
@@ -484,6 +489,9 @@ const App: React.FC = () => {
   const [pdfNavigationMode, setPdfNavigationMode] = useState(false);
   const [pdfDocument, setPdfDocument] = useState<PdfAnnotationDocument | null>(null);
   const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>([]);
+  const [pdfGlobalComments, setPdfGlobalComments] = useState<PdfGlobalComment[]>([]);
+  const [showPdfGlobalComment, setShowPdfGlobalComment] = useState(false);
+  const pdfGlobalCommentButtonRef = useRef<HTMLButtonElement>(null);
   const [pdfDirty, setPdfDirty] = useState(false);
   const [pdfSaveStatus, setPdfSaveStatus] = useState<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('idle');
   const [pdfSaveMessage, setPdfSaveMessage] = useState('');
@@ -495,6 +503,8 @@ const App: React.FC = () => {
     if (!pdfSurface) {
       setPdfDocument(null);
       setPdfAnnotations([]);
+      setPdfGlobalComments([]);
+      setShowPdfGlobalComment(false);
       setPdfSaveStatus('idle');
       setPdfSaveMessage('');
       setPdfDirty(false);
@@ -511,9 +521,11 @@ const App: React.FC = () => {
       .then((document) => {
         setPdfDocument(document);
         setPdfAnnotations(document.annotations);
+        setPdfGlobalComments(document.globalComments ?? []);
         setPdfSaveStatus('saved');
-        setPdfSaveMessage(document.annotations.length
-          ? `${document.annotations.length} annotations loaded`
+        const itemCount = document.annotations.length + (document.globalComments?.length ?? 0);
+        setPdfSaveMessage(itemCount
+          ? `${itemCount} annotations loaded`
           : 'No annotations yet');
         setPdfDirty(false);
       })
@@ -533,13 +545,14 @@ const App: React.FC = () => {
       const response = await fetch(pdfSurface.annotationsUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ annotations: pdfAnnotations }),
+        body: JSON.stringify({ annotations: pdfAnnotations, globalComments: pdfGlobalComments }),
       });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json() as { document?: PdfAnnotationDocument };
       if (result.document) {
         setPdfDocument(result.document);
         setPdfAnnotations(result.document.annotations);
+        setPdfGlobalComments(result.document.globalComments ?? []);
       }
       setPdfDirty(false);
       setPdfSaveStatus('saved');
@@ -550,7 +563,7 @@ const App: React.FC = () => {
       setPdfSaveMessage(error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [pdfAnnotations, pdfDocument, pdfSurface]);
+  }, [pdfAnnotations, pdfDocument, pdfGlobalComments, pdfSurface]);
 
   const maybeConfirmPdfDiscard = useCallback((action: () => void): boolean => {
     if (!pdfDirty) {
@@ -564,15 +577,36 @@ const App: React.FC = () => {
 
   const pdfPanelAnnotations = useMemo(
     () => pdfDocument
-      ? pdfAnnotations.map((annotation) => pdfAnnotationToAnnotation(annotation, pdfDocument.labels))
+      ? [
+          ...pdfGlobalComments.map(pdfGlobalCommentToAnnotation),
+          ...pdfAnnotations.map((annotation) => pdfAnnotationToAnnotation(annotation, pdfDocument.labels)),
+        ]
       : [],
-    [pdfAnnotations, pdfDocument],
+    [pdfAnnotations, pdfDocument, pdfGlobalComments],
   );
 
   const handleAddPdfAnnotation = useCallback((annotation: PdfAnnotation) => {
     setPdfAnnotations((current) => [...current, annotation]);
     setSelectedAnnotationId(annotation.id);
     setSelectedCodeAnnotationId(null);
+    setPdfDirty(true);
+    setPdfSaveStatus('idle');
+    setPdfSaveMessage('Unsaved changes');
+  }, []);
+
+  const handleAddPdfGlobalComment = useCallback((text: string) => {
+    const comment: PdfGlobalComment = {
+      id: generateId('pdf-global'),
+      text,
+      author: configStore.get('displayName') || undefined,
+      created_at: new Date().toISOString(),
+    };
+    setPdfGlobalComments((current) => [...current, comment]);
+    setShowPdfGlobalComment(false);
+    setSelectedAnnotationId(comment.id);
+    setSelectedCodeAnnotationId(null);
+    setRightSidebarTab('annotations');
+    setIsPanelOpen(true);
     setPdfDirty(true);
     setPdfSaveStatus('idle');
     setPdfSaveMessage('Unsaved changes');
@@ -3893,6 +3927,7 @@ const App: React.FC = () => {
   const handleDeletePdfAnnotation = React.useCallback((id: string) => {
     if (documentReadOnly) return;
     setPdfAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setPdfGlobalComments((current) => current.filter((comment) => comment.id !== id));
     if (selectedAnnotationId === id) setSelectedAnnotationId(null);
     setPdfDirty(true);
     setPdfSaveStatus('idle');
@@ -3904,6 +3939,9 @@ const App: React.FC = () => {
     setPdfAnnotations((current) => current.map((annotation) => annotation.id === id
       ? applyAnnotationUpdatesToPdf(annotation, updates)
       : annotation));
+    setPdfGlobalComments((current) => current.map((comment) => comment.id === id
+      ? applyAnnotationUpdatesToPdfGlobalComment(comment, updates)
+      : comment));
     setPdfDirty(true);
     setPdfSaveStatus('idle');
     setPdfSaveMessage('Unsaved changes');
@@ -5726,6 +5764,15 @@ const App: React.FC = () => {
                       <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:block">
                         Select text for a comment or quick label. Hold Alt and drag for an area annotation.
                       </span>
+                      <Button
+                        ref={pdfGlobalCommentButtonRef}
+                        size="xs"
+                        variant="ghost"
+                        disabled={documentReadOnly}
+                        onClick={() => setShowPdfGlobalComment(true)}
+                      >
+                        Global comment
+                      </Button>
                       <span
                         className={`ml-auto hidden truncate text-[11px] sm:block ${pdfSaveStatus === 'error' ? 'text-destructive' : pdfDirty ? 'text-primary' : 'text-muted-foreground'}`}
                         title={pdfSaveMessage}
@@ -5752,6 +5799,17 @@ const App: React.FC = () => {
                         Save &amp; Done
                       </Button>
                     </div>
+                    {showPdfGlobalComment && pdfGlobalCommentButtonRef.current ? (
+                      <CommentPopover
+                        anchorEl={pdfGlobalCommentButtonRef.current}
+                        contextText=""
+                        isGlobal
+                        allowImages={false}
+                        draftKey="pdf:global-comment"
+                        onSubmit={handleAddPdfGlobalComment}
+                        onClose={() => setShowPdfGlobalComment(false)}
+                      />
+                    ) : null}
                     {pdfDocument ? (
                       <PdfAnnotatorView
                         key={pdfSurface.url}

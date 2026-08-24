@@ -4,6 +4,7 @@ import {
   type PdfAnnotation,
   type PdfAnnotationColor,
   type PdfAnnotationDocument,
+  type PdfGlobalComment,
   type PdfAnnotationRect,
   type PdfPageMapping,
   type PdfSourceDescriptor,
@@ -20,6 +21,7 @@ export interface PdfAnnotationSidecarPaths {
   normalized: string;
   raw: string;
   hidden: string;
+  global: string;
   metadata: string;
   migrationReport: string;
 }
@@ -43,6 +45,7 @@ export function pdfAnnotationSidecarPaths(source: PdfSourceDescriptor): PdfAnnot
     normalized: join(metadataDirectory, "annotations.json"),
     raw: join(metadataDirectory, "annotations-raw.json"),
     hidden: join(metadataDirectory, "annotations-hidden.json"),
+    global: join(metadataDirectory, "annotations-global.json"),
     metadata: join(metadataDirectory, "metadata.json"),
     migrationReport: join(metadataDirectory, "migration-report.json"),
   };
@@ -249,6 +252,35 @@ function normalizePdfAnnotations(
   });
 }
 
+function loadPdfGlobalComments(source: PdfSourceDescriptor): PdfGlobalComment[] {
+  const values = readJson<unknown[]>(pdfAnnotationSidecarPaths(source).global, []);
+  if (!Array.isArray(values)) return [];
+  return values.filter((value): value is PdfGlobalComment => Boolean(
+    value && typeof value === "object"
+    && "id" in value && typeof value.id === "string" && value.id.length > 0
+    && "text" in value && typeof value.text === "string" && value.text.trim().length > 0
+    && (!("author" in value) || value.author === undefined || typeof value.author === "string")
+    && (!("created_at" in value) || value.created_at === undefined || typeof value.created_at === "string"),
+  ));
+}
+
+function normalizePdfGlobalComments(comments: readonly PdfGlobalComment[]): PdfGlobalComment[] {
+  if (comments.length > PDF_ANNOTATION_MAX_COUNT) {
+    throw new Error(`Too many PDF global comments (max ${PDF_ANNOTATION_MAX_COUNT})`);
+  }
+  return comments.map((comment) => {
+    if (!comment.id || typeof comment.text !== "string" || !comment.text.trim()) {
+      throw new Error("Invalid PDF global comment payload");
+    }
+    return {
+      id: comment.id,
+      text: comment.text,
+      author: comment.author,
+      created_at: comment.created_at,
+    };
+  });
+}
+
 function markdownLabel(annotation: PdfAnnotation): string {
   const explicit = annotation.label?.trim();
   if (explicit) return explicit.toLowerCase();
@@ -260,10 +292,19 @@ export function renderPdfAnnotationsMarkdown(
   pdfName: string,
   annotations: readonly PdfAnnotation[],
   mapping?: PdfPageMapping,
+  globalComments: readonly PdfGlobalComment[] = [],
 ): string {
   const lines = ["## Browser annotations", "", "<!-- pi-annotate:start -->", ""];
   const sorted = sortPdfAnnotations(annotations);
-  if (sorted.length === 0) lines.push("No browser annotations yet.", "");
+  if (globalComments.length === 0 && sorted.length === 0) lines.push("No browser annotations yet.", "");
+  if (globalComments.length > 0) {
+    lines.push("### Document comments", "");
+    for (const comment of globalComments) {
+      let line = `- **global comment** — ${comment.text.replace(/\s+/g, " ").trim()}`;
+      if (comment.author) line += ` _(by ${comment.author})_`;
+      lines.push(line, "");
+    }
+  }
   let currentPage: number | undefined;
   for (const annotation of sorted) {
     const page = pdfPage(annotation);
@@ -291,8 +332,9 @@ function mergePdfAnnotationsMarkdown(
   pdfName: string,
   annotations: readonly PdfAnnotation[],
   mapping?: PdfPageMapping,
+  globalComments: readonly PdfGlobalComment[] = [],
 ): string {
-  const section = renderPdfAnnotationsMarkdown(pdfName, annotations, mapping).trimEnd();
+  const section = renderPdfAnnotationsMarkdown(pdfName, annotations, mapping, globalComments).trimEnd();
   const marker = /\n?## Browser annotations\n\n<!-- pi-annotate:start -->[\s\S]*?<!-- pi-annotate:end -->\n?/;
   if (marker.test(existing)) return existing.replace(marker, `\n${section}\n`);
   return `${existing.trimEnd()}\n\n${section}\n`;
@@ -329,6 +371,7 @@ export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnot
   return {
     source: { fileName: source.pdfName },
     annotations: sortPdfAnnotations([...browser, ...raw.filter((annotation) => !seen.has(annotation.id))]),
+    globalComments: loadPdfGlobalComments(source),
     pageMapping: loadPageMapping(source),
     labels: { ...DEFAULT_PDF_ANNOTATION_LABELS },
   };
@@ -337,6 +380,7 @@ export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnot
 export function savePdfAnnotationDocument(
   source: PdfSourceDescriptor,
   annotations: readonly PdfAnnotation[],
+  globalComments?: readonly PdfGlobalComment[],
 ): PdfAnnotationDocument {
   const paths = pdfAnnotationSidecarPaths(source);
   const mapping = loadPageMapping(source);
@@ -346,12 +390,24 @@ export function savePdfAnnotationDocument(
     .filter((id) => !currentIds.has(id))
     .sort();
   const normalized = normalizePdfAnnotations(annotations, mapping);
+  // Older clients only send the page-anchored annotations array. Preserve
+  // document comments when that optional field is absent.
+  const normalizedGlobalComments = normalizePdfGlobalComments(
+    globalComments === undefined ? loadPdfGlobalComments(source) : globalComments,
+  );
   const existingMarkdown = existsSync(paths.markdown)
     ? readFileSync(paths.markdown, "utf8")
     : `# Annotations — ${basename(source.sourceDirectory)}\n\n## Notes\n\n## Quotes\n\n## Relevance\n`;
 
   atomicWrite(paths.hidden, `${JSON.stringify([...new Set(hiddenIds)], null, 2)}\n`);
   atomicWrite(paths.normalized, `${JSON.stringify(normalized, null, 2)}\n`);
-  atomicWrite(paths.markdown, mergePdfAnnotationsMarkdown(existingMarkdown, source.pdfName, normalized, mapping));
+  atomicWrite(paths.global, `${JSON.stringify(normalizedGlobalComments, null, 2)}\n`);
+  atomicWrite(paths.markdown, mergePdfAnnotationsMarkdown(
+    existingMarkdown,
+    source.pdfName,
+    normalized,
+    mapping,
+    normalizedGlobalComments,
+  ));
   return loadPdfAnnotationDocument(source);
 }

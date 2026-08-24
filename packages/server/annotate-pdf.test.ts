@@ -72,15 +72,21 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Bun PDF annotate server"
     const save = await fetch(`${server.url}/api/pdf/annotations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ annotations: [annotation()] }),
+      body: JSON.stringify({
+        annotations: [annotation()],
+        globalComments: [{ id: "global-one", text: "Whole-document note", author: "Eik" }],
+      }),
     });
     expect(save.status).toBe(200);
-    expect(await save.json()).toMatchObject({ ok: true, count: 1 });
+    expect(await save.json()).toMatchObject({ ok: true, count: 1, globalCommentCount: 1 });
     expect(sha256(readFileSync(fixture.pdfPath))).toBe(before);
 
     const loaded = await fetch(`${server.url}/api/pdf/annotations`).then((response) => response.json());
     expect(loaded.annotations.map(({ id }: { id: string }) => id)).toEqual(["one"]);
-    expect(readFileSync(join(fixture.directory, "annotations.md"), "utf8")).toContain("[[source.pdf#page=1");
+    expect(loaded.globalComments).toEqual([{ id: "global-one", text: "Whole-document note", author: "Eik" }]);
+    const annotationsMarkdown = readFileSync(join(fixture.directory, "annotations.md"), "utf8");
+    expect(annotationsMarkdown).toContain("**global comment** — Whole-document note");
+    expect(annotationsMarkdown).toContain("[[source.pdf#page=1");
 
     const tree = await fetch(`${server.url}/api/reference/files?dirPath=${encodeURIComponent(fixture.directory)}`).then((response) => response.json());
     expect(JSON.stringify(tree.tree)).toContain("source.pdf");
