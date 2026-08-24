@@ -32,6 +32,10 @@ interface AnnotationToolbarProps {
   onRequestComment?: (initialChar?: string) => void;
   /** Called when a quick label chip is selected */
   onQuickLabel?: (label: QuickLabel) => void;
+  /** Optional labels owned by the active document adapter. */
+  quickLabels?: QuickLabel[];
+  /** Keep the incumbent one-click Looks good action unless a surface opts out. */
+  showQuickApprove?: boolean;
   /** Text to copy when the button is clicked */
   copyText?: string;
   /** Comment-only surfaces (HTML / live-app viewer): hide the Delete action.
@@ -56,6 +60,8 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   onClose,
   onRequestComment,
   onQuickLabel,
+  quickLabels: suppliedQuickLabels,
+  showQuickApprove = true,
   copyText,
   commentOnly = false,
   hideCopyButton = false,
@@ -69,7 +75,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   const [showQuickLabels, setShowQuickLabels] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const zapButtonRef = useRef<HTMLButtonElement>(null);
-  const quickLabels = useMemo(() => getQuickLabels(), []);
+  const quickLabels = useMemo(() => suppliedQuickLabels ?? getQuickLabels(), [suppliedQuickLabels]);
 
   useEffect(() => { setCopied(false); }, [element]);
 
@@ -245,15 +251,18 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
               label="Quick label"
               className={showQuickLabels ? "text-amber-500 bg-amber-500/10" : "text-amber-500 hover:bg-amber-500/10"}
             />
-            <ToolbarButton
-              onClick={() => onQuickLabel(THUMBS_UP_LABEL)}
-              icon={<span className="block w-4 h-4 text-sm leading-4 text-center">👍</span>}
-              label="Looks good"
-              className="hover:bg-green-500/10"
-            />
+            {showQuickApprove && (
+              <ToolbarButton
+                onClick={() => onQuickLabel(THUMBS_UP_LABEL)}
+                icon={<span className="block w-4 h-4 text-sm leading-4 text-center">👍</span>}
+                label="Looks good"
+                className="hover:bg-green-500/10"
+              />
+            )}
             {showQuickLabels && zapButtonRef.current && (
               <FloatingQuickLabelPicker
                 anchorEl={zapButtonRef.current}
+                labels={quickLabels}
                 onSelect={(label) => {
                   setShowQuickLabels(false);
                   onQuickLabel(label);

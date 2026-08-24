@@ -5,6 +5,8 @@ import { QuickLabelDropdown } from './QuickLabelDropdown';
 
 interface FloatingQuickLabelPickerProps {
   anchorEl: HTMLElement;
+  /** Optional document-surface labels; defaults to the user's configured labels. */
+  labels?: QuickLabel[];
   /** Mouse coordinates at the moment of selection — picker appears here */
   cursorHint?: { x: number; y: number };
   onSelect: (label: QuickLabel) => void;
@@ -45,13 +47,14 @@ function computePosition(
 
 export const FloatingQuickLabelPicker: React.FC<FloatingQuickLabelPickerProps> = ({
   anchorEl,
+  labels,
   cursorHint,
   onSelect,
   onDismiss,
 }) => {
   const [position, setPosition] = useState<{ top: number; left: number; flipAbove: boolean } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const quickLabels = useMemo(() => getQuickLabels(), []);
+  const quickLabels = useMemo(() => labels ?? getQuickLabels(), [labels]);
 
   // Position tracking
   useEffect(() => {

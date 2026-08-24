@@ -51,8 +51,6 @@ interface AppHeaderProps {
   isSubmitting: boolean;
   isExiting: boolean;
   isPanelOpen: boolean;
-  /** False when the active document surface owns its own annotation controls. */
-  documentPanelAvailable?: boolean;
   aiAvailable: boolean;
   isAIChatOpen: boolean;
   aiHasMessages: boolean;
@@ -143,7 +141,6 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   isSubmitting,
   isExiting,
   isPanelOpen,
-  documentPanelAvailable = true,
   aiAvailable,
   isAIChatOpen,
   aiHasMessages,
@@ -408,7 +405,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
         )}
 
         {/* Annotations panel toggle */}
-        {!compactTouchLayout && !goalSetupMode && documentPanelAvailable && (
+        {!compactTouchLayout && !goalSetupMode && (
           <button
             onClick={onAnnotationPanelToggle}
             className={`relative p-1.5 rounded-md text-xs font-medium transition-all ${
@@ -428,7 +425,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             )}
           </button>
         )}
-        {!compactTouchLayout && !goalSetupMode && documentPanelAvailable && aiAvailable && (
+        {!compactTouchLayout && !goalSetupMode && aiAvailable && (
           <button
             onClick={onAIChatToggle}
             className={`relative p-1.5 rounded-md text-xs font-medium transition-all ${

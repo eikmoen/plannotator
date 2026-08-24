@@ -45,6 +45,8 @@ export interface PdfAnnotationComment {
 export interface PdfAnnotation {
   id: string;
   color?: PdfAnnotationColor;
+  /** Optional per-annotation display label. Older sidecars derive it from color. */
+  label?: string;
   embedded?: boolean;
   imported?: boolean;
   imported_from?: string;

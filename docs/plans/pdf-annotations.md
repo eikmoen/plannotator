@@ -29,7 +29,8 @@ Implemented on `feature/pdf-annotations`:
 - `/plannotator-open` updated to discover and forward PDFs;
 - Devbox global Pi settings switched from the npm release to the local fork;
 - end-to-end Pi command startup verified `renderAs: "pdf"` through the normal `/plannotator-annotate source.pdf` command and EikLaptop handoff path;
-- live save verification confirmed that sidecars changed while the PDF SHA-256 remained unchanged.
+- live save verification confirmed that sidecars changed while the PDF SHA-256 remained unchanged;
+- the initial standalone PDF sidebar was subsequently replaced by the native Plannotator annotation panel, cards, composer, quick-label picker, save state, and responsive shell integration described in `pdf-native-annotation-refinement.md`.
 
 Still pending in later slices:
 

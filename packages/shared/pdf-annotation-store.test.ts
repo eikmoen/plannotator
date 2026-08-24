@@ -66,7 +66,7 @@ describe("PDF annotation sidecar store", () => {
   test("saves browser annotations atomically without changing PDF bytes or hand-written Markdown", () => {
     const { pdfPath, pdfBytes, source } = fixture();
     const loaded = loadPdfAnnotationDocument(source);
-    const added = annotation("added", 3, "yellow");
+    const added = { ...annotation("added", 3, "yellow"), label: "Comment" };
     const saved = savePdfAnnotationDocument(source, [...loaded.annotations, added]);
     const paths = pdfAnnotationSidecarPaths(source);
 
@@ -79,7 +79,7 @@ describe("PDF annotation sidecar store", () => {
     const markdown = readFileSync(paths.markdown, "utf8");
     expect(markdown).toContain("Hand-written note.");
     expect(markdown).toContain("<!-- pi-annotate:start -->");
-    expect(markdown).toContain("[[source.pdf#page=3|source.pdf, p. 37]]");
+    expect(markdown).toContain("**comment** — [[source.pdf#page=3|source.pdf, p. 37]]");
     expect(JSON.parse(readFileSync(paths.hidden, "utf8"))).toEqual([]);
   });
 

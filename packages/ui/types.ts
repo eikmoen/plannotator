@@ -1,3 +1,5 @@
+import type { PdfAnnotation, PdfAnnotationColor, PdfAnnotationPosition } from '@plannotator/core/pdf-annotations';
+
 export enum AnnotationType {
   DELETION = 'DELETION',
   COMMENT = 'COMMENT',
@@ -57,6 +59,17 @@ export interface ArtifactAnnotationMeta {
   anchor: ArtifactAnnotationAnchor;
 }
 
+export interface PdfAnnotationAnchor {
+  position: PdfAnnotationPosition;
+  content: PdfAnnotation['content'];
+  color: PdfAnnotationColor;
+  label: string;
+  page: number;
+  pageLabel: string;
+  imported?: boolean;
+  embedded?: boolean;
+}
+
 export interface Annotation {
   id: string;
   blockId: string; // Legacy - not used with web-highlighter
@@ -82,6 +95,8 @@ export interface Annotation {
   pageUrl?: string; // set only by live app annotate sessions: the page (pathname + search) the annotation was made on; restore filters to the current page and export groups by page
   htmlAnchor?: HtmlElementAnchor; // raw-HTML pinpoint: serialized element anchor for reliable restoration
   htmlAdditionalTargets?: HtmlAnnotationTarget[]; // raw-HTML shift-click multi-select: extra elements this one comment covers (primary stays htmlAnchor/originalText)
+  /** Durable page/coordinate anchor when this annotation is projected from a PDF sidecar. */
+  pdfAnchor?: PdfAnnotationAnchor;
   // web-highlighter metadata for cross-element selections
   startMeta?: AnnotationTextMeta;
   endMeta?: AnnotationTextMeta;

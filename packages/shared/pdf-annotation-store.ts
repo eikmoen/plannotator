@@ -249,7 +249,10 @@ function normalizePdfAnnotations(
   });
 }
 
-function markdownLabel(color: PdfAnnotationColor): string {
+function markdownLabel(annotation: PdfAnnotation): string {
+  const explicit = annotation.label?.trim();
+  if (explicit) return explicit.toLowerCase();
+  const color = annotationColor(annotation);
   return ({ red: "anchor", blue: "definition", yellow: "example", green: "thesis" } as const)[color];
 }
 
@@ -269,11 +272,10 @@ export function renderPdfAnnotationsMarkdown(
       currentPage = page;
       lines.push(`### Page ${label}`, "");
     }
-    const color = annotationColor(annotation);
     const note = annotationNote(annotation);
     const author = annotationAuthor(annotation);
     const quote = annotationQuote(annotation).replace(/\s+/g, " ").trim();
-    let heading = `- **${markdownLabel(color)}** — [[${pdfName}#page=${page}|${pdfName}, p. ${label}]]`;
+    let heading = `- **${markdownLabel(annotation)}** — [[${pdfName}#page=${page}|${pdfName}, p. ${label}]]`;
     if (note) heading += ` — ${note}`;
     if (author) heading += ` _(by ${author})_`;
     lines.push(heading);

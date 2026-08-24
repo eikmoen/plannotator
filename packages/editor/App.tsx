@@ -9,6 +9,8 @@ import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
 import { PdfAnnotatorView } from '@plannotator/ui/components/PdfAnnotatorView';
+import type { PdfAnnotation, PdfAnnotationDocument } from '@plannotator/core/pdf-annotations';
+import { applyAnnotationUpdatesToPdf, pdfAnnotationToAnnotation } from '@plannotator/ui/utils/pdfAnnotations';
 import { MarkdownEditor, type MarkdownEditorHandle } from '@plannotator/ui/components/MarkdownEditor';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { DocumentAIChatPanel } from '@plannotator/ui/components/ai/DocumentAIChatPanel';
@@ -16,6 +18,7 @@ import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ExportModal } from '@plannotator/ui/components/ExportModal';
 import { ImportModal } from '@plannotator/ui/components/ImportModal';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
+import { Button } from '@plannotator/ui/components/ui/button';
 import { Annotation, AnnotationType, Block, EditorMode, type CodeAnnotation, type InputMethod, type ImageAttachment, type ActionsLabelMode } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { Tooltip, TooltipProvider } from '@plannotator/ui/components/Tooltip';
@@ -474,8 +477,121 @@ const App: React.FC = () => {
   const [sourceConverted, setSourceConverted] = useState(false);
   const [renderAs, setRenderAs] = useState<'markdown' | 'html'>('markdown');
   const [pdfSurface, setPdfSurface] = useState<{ url: string; annotationsUrl: string } | null>(null);
+  const [pdfDocument, setPdfDocument] = useState<PdfAnnotationDocument | null>(null);
+  const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>([]);
   const [pdfDirty, setPdfDirty] = useState(false);
+  const [pdfSaveStatus, setPdfSaveStatus] = useState<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('idle');
+  const [pdfSaveMessage, setPdfSaveMessage] = useState('');
+  const [showPdfDiscardWarning, setShowPdfDiscardWarning] = useState(false);
+  const pdfDiscardActionRef = useRef<(() => void) | null>(null);
   const isPdfSurface = pdfSurface !== null;
+
+  useEffect(() => {
+    if (!pdfSurface) {
+      setPdfDocument(null);
+      setPdfAnnotations([]);
+      setPdfSaveStatus('idle');
+      setPdfSaveMessage('');
+      setPdfDirty(false);
+      return;
+    }
+    const controller = new AbortController();
+    setPdfSaveStatus('loading');
+    setPdfSaveMessage('Loading annotations…');
+    fetch(pdfSurface.annotationsUrl, { cache: 'no-store', signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json() as Promise<PdfAnnotationDocument>;
+      })
+      .then((document) => {
+        setPdfDocument(document);
+        setPdfAnnotations(document.annotations);
+        setPdfSaveStatus('saved');
+        setPdfSaveMessage(document.annotations.length
+          ? `${document.annotations.length} annotations loaded`
+          : 'No annotations yet');
+        setPdfDirty(false);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setPdfSaveStatus('error');
+        setPdfSaveMessage(error instanceof Error ? error.message : String(error));
+      });
+    return () => controller.abort();
+  }, [pdfSurface]);
+
+  const persistPdfAnnotations = useCallback(async (): Promise<boolean> => {
+    if (!pdfSurface || !pdfDocument) return false;
+    setPdfSaveStatus('saving');
+    setPdfSaveMessage('Saving…');
+    try {
+      const response = await fetch(pdfSurface.annotationsUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ annotations: pdfAnnotations }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json() as { document?: PdfAnnotationDocument };
+      if (result.document) {
+        setPdfDocument(result.document);
+        setPdfAnnotations(result.document.annotations);
+      }
+      setPdfDirty(false);
+      setPdfSaveStatus('saved');
+      setPdfSaveMessage('Saved sidecars; PDF unchanged');
+      return true;
+    } catch (error) {
+      setPdfSaveStatus('error');
+      setPdfSaveMessage(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }, [pdfAnnotations, pdfDocument, pdfSurface]);
+
+  const maybeConfirmPdfDiscard = useCallback((action: () => void): boolean => {
+    if (!pdfDirty) {
+      action();
+      return false;
+    }
+    pdfDiscardActionRef.current = action;
+    setShowPdfDiscardWarning(true);
+    return true;
+  }, [pdfDirty]);
+
+  const pdfPanelAnnotations = useMemo(
+    () => pdfDocument
+      ? pdfAnnotations.map((annotation) => pdfAnnotationToAnnotation(annotation, pdfDocument.labels))
+      : [],
+    [pdfAnnotations, pdfDocument],
+  );
+
+  const handleAddPdfAnnotation = useCallback((annotation: PdfAnnotation) => {
+    setPdfAnnotations((current) => [...current, annotation]);
+    setSelectedAnnotationId(annotation.id);
+    setSelectedCodeAnnotationId(null);
+    setPdfDirty(true);
+    setPdfSaveStatus('idle');
+    setPdfSaveMessage('Unsaved changes');
+  }, []);
+
+  const handleUpdatePdfArea = useCallback((
+    id: string,
+    position: Partial<PdfAnnotation['position']>,
+    content: Partial<PdfAnnotation['content']>,
+  ) => {
+    setPdfAnnotations((current) => current.map((annotation) => annotation.id === id
+      ? {
+          ...annotation,
+          imported: false,
+          embedded: false,
+          position: { ...annotation.position, ...position },
+          content: { ...annotation.content, ...content },
+        }
+      : annotation));
+    setPdfDirty(true);
+    setPdfSaveStatus('idle');
+    setPdfSaveMessage('Unsaved changes');
+  }, []);
+
   // HTML plans render edge-to-edge (full-viewport) instead of in the centered,
   // card-chromed markdown column. Branch the document-area containers on this.
   const isHtmlSurface = renderAs === 'html';
@@ -1475,14 +1591,14 @@ const App: React.FC = () => {
   ]);
 
   const handleFileBrowserSelect = React.useCallback(async (absolutePath: string, dirPath: string): Promise<void> => {
+    const performSelect = async () => {
     const normalizedAbsolutePath = normalizeBrowserPath(absolutePath);
-    if (isPdfSurface && pdfDirty && !window.confirm('Discard unsaved PDF annotation changes?')) return;
-    setPdfDirty(false);
     const dirState = fileBrowser.dirs.find(d => d.path === dirPath);
     if (/\.pdf$/i.test(normalizedAbsolutePath) && !dirState?.isVault) {
       const params = new URLSearchParams({ path: absolutePath, base: dirPath });
       fileBrowser.setActiveFile(absolutePath);
-      setIsPanelOpen(false);
+      setRightSidebarTab('annotations');
+      setIsPanelOpen(true);
       setPdfSurface({
         url: `/api/pdf?${params.toString()}`,
         annotationsUrl: `/api/pdf/annotations?${params.toString()}`,
@@ -1537,7 +1653,13 @@ const App: React.FC = () => {
       : (path: string) => `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(dirPath)}&doc=1${convertHtml ? '&convert=1' : ''}`;
     fileBrowser.setActiveFile(absolutePath);
     await linkedDocHook.open(absolutePath, buildUrl, 'files');
-  }, [editableDocuments, linkedDocHook, fileBrowser, convertHtml, isEditingMarkdown, isPdfSurface, pdfDirty]);
+    };
+    if (isPdfSurface && pdfDirty) {
+      maybeConfirmPdfDiscard(() => { void performSelect(); });
+      return;
+    }
+    await performSelect();
+  }, [editableDocuments, linkedDocHook, fileBrowser, convertHtml, isEditingMarkdown, isPdfSurface, maybeConfirmPdfDiscard, pdfDirty]);
 
   // Route linked doc opens through the correct endpoint based on current context
   const handleOpenLinkedDoc = React.useCallback((docPath: string) => {
@@ -1727,6 +1849,7 @@ const App: React.FC = () => {
       editorAnnotations.length +
       linkedDocHook.docAnnotationCount +
       globalAttachments.length;
+  const panelAnnotationCount = isPdfSurface ? pdfPanelAnnotations.length : feedbackAnnotationCount;
 
   // Lazily fetch the SKILL.md contents of referenced HUMAN-ONLY skills so the
   // exported feedback can inject their instructions (a human referencing a
@@ -2896,7 +3019,8 @@ const App: React.FC = () => {
             token: data.liveToken,
           });
         } else if (data.renderAs === 'pdf' && data.pdf) {
-          setIsPanelOpen(false);
+          setRightSidebarTab('annotations');
+          setIsPanelOpen(true);
           setPdfDirty(false);
           setPdfSurface(data.pdf);
           setMarkdown('');
@@ -3628,7 +3752,7 @@ const App: React.FC = () => {
 
       // Don't intercept if any modal is open
       if (showExport || showImport || showFeedbackPrompt || showClaudeCodeWarning ||
-          showSourceFileEditWarning ||
+          showSourceFileEditWarning || showPdfDiscardWarning ||
           showExitWarning || showApproveWithNotesConfirmation || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
 
       // Don't intercept if already submitted, submitting, or exiting
@@ -3660,6 +3784,13 @@ const App: React.FC = () => {
       if (isTextField) return;
 
       e.preventDefault();
+
+      if (isPdfSurface) {
+        void persistPdfAnnotations().then((saved) => {
+          if (saved) void handleAnnotateExit();
+        });
+        return;
+      }
 
       // Annotate mode: gate-enabled + no annotations → approve. With feedback
       // present, Mod+Enter always means Send Feedback — Approve-with-Notes is
@@ -3708,6 +3839,7 @@ const App: React.FC = () => {
     gate, approvalNotesSupported, hasFeedbackToSend, goalSetupMode, goalSetupAction.canSubmit, isAgentTerminalReady,
     annotateSource, origin, getAgentWarning,
     maybeConfirmUnsavedSourceFileEdits,
+    isPdfSurface, persistPdfAnnotations, handleAnnotateExit, showPdfDiscardWarning,
   ]);
 
   const handleAddAnnotation = (ann: Annotation) => {
@@ -3739,6 +3871,31 @@ const App: React.FC = () => {
     if (id) setSelectedCodeAnnotationId(null);
     if (id && isMobile && !isCompactTouchLayout && wideModeType === null) setIsPanelOpen(true);
   }, [isCompactTouchLayout, isMobile, wideModeType]);
+
+  const handleSelectPdfAnnotation = React.useCallback((id: string | null) => {
+    setSelectedAnnotationId(id);
+    if (id) setSelectedCodeAnnotationId(null);
+    if (id && isMobile && !isCompactTouchLayout && wideModeType === null) setIsPanelOpen(true);
+  }, [isCompactTouchLayout, isMobile, wideModeType]);
+
+  const handleDeletePdfAnnotation = React.useCallback((id: string) => {
+    if (documentReadOnly) return;
+    setPdfAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    if (selectedAnnotationId === id) setSelectedAnnotationId(null);
+    setPdfDirty(true);
+    setPdfSaveStatus('idle');
+    setPdfSaveMessage('Unsaved changes');
+  }, [documentReadOnly, selectedAnnotationId]);
+
+  const handleEditPdfAnnotation = React.useCallback((id: string, updates: Partial<Annotation>) => {
+    if (documentReadOnly) return;
+    setPdfAnnotations((current) => current.map((annotation) => annotation.id === id
+      ? applyAnnotationUpdatesToPdf(annotation, updates)
+      : annotation));
+    setPdfDirty(true);
+    setPdfSaveStatus('idle');
+    setPdfSaveMessage('Unsaved changes');
+  }, [documentReadOnly]);
 
   const handleAddCodeAnnotation = React.useCallback((input: CodeFileAnnotationInput) => {
     if (documentReadOnly) return;
@@ -4405,10 +4562,16 @@ const App: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
-          showSourceFileEditWarning ||
+          showSourceFileEditWarning || showPdfDiscardWarning ||
           showExitWarning || showApproveWithNotesConfirmation || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
 
       if (submitted || !isApiMode) return;
+
+      if (isPdfSurface) {
+        e.preventDefault();
+        if (pdfDirty) void persistPdfAnnotations();
+        return;
+      }
 
       if (isEditingMarkdown && editableDocuments.getActiveDocumentLive()?.sourceSave?.enabled) {
         e.preventDefault();
@@ -4441,8 +4604,9 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleSaveShortcut);
   }, [
     showExport, showFeedbackPrompt, showClaudeCodeWarning, showSourceFileEditWarning, showExitWarning, showApproveWithNotesConfirmation, showAgentWarning,
-    showPermissionModeSetup, pendingPasteImage,
+    showPermissionModeSetup, showPdfDiscardWarning, pendingPasteImage,
     submitted, isApiMode, documentReadOnly, isEditingMarkdown, handleSaveEditedSourceFile, displayedMarkdown, annotationsOutput,
+    isPdfSurface, pdfDirty, persistPdfAnnotations,
   ]);
 
   // Cmd/Ctrl+P keyboard shortcut — print plan
@@ -4454,7 +4618,7 @@ const App: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
-          showSourceFileEditWarning ||
+          showSourceFileEditWarning || showPdfDiscardWarning ||
           showExitWarning || showApproveWithNotesConfirmation || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
 
       if (submitted) return;
@@ -4467,7 +4631,7 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handlePrintShortcut);
   }, [
     showExport, showFeedbackPrompt, showClaudeCodeWarning, showSourceFileEditWarning, showExitWarning, showApproveWithNotesConfirmation, showAgentWarning,
-    showPermissionModeSetup, pendingPasteImage, submitted,
+    showPermissionModeSetup, showPdfDiscardWarning, pendingPasteImage, submitted,
   ]);
 
   const agentName = useMemo(() => getAgentName(origin), [origin]);
@@ -4503,7 +4667,6 @@ const App: React.FC = () => {
   };
 
   const handleHeaderAnnotateExit = useCallback(() => {
-    if (pdfDirty && !window.confirm('Close without saving PDF annotation changes?')) return;
     const close = () => {
       if (hasFeedbackToSend) {
         setExitWarningAction('close');
@@ -4513,8 +4676,12 @@ const App: React.FC = () => {
       }
     };
     if (maybeConfirmUnsavedSourceFileEdits('close', close)) return;
+    if (isPdfSurface && pdfDirty) {
+      maybeConfirmPdfDiscard(close);
+      return;
+    }
     close();
-  }, [hasFeedbackToSend, maybeConfirmUnsavedSourceFileEdits, pdfDirty]);
+  }, [hasFeedbackToSend, isPdfSurface, maybeConfirmPdfDiscard, maybeConfirmUnsavedSourceFileEdits, pdfDirty]);
 
   const handleHeaderFeedback = useCallback(() => {
     const sendFeedback = () => {
@@ -4700,13 +4867,13 @@ const App: React.FC = () => {
           ? [{
               id: 'annotations' as const,
               label: 'Annotations',
-              subtitle: feedbackAnnotationCount > 0
-                ? `${feedbackAnnotationCount} item${feedbackAnnotationCount === 1 ? '' : 's'}`
+              subtitle: panelAnnotationCount > 0
+                ? `${panelAnnotationCount} item${panelAnnotationCount === 1 ? '' : 's'}`
                 : undefined,
               onSelect: () => openCompactPlanSurface('annotations'),
             }]
           : []),
-        ...(!goalSetupMode && canUseAskAI
+        ...(!goalSetupMode && !isPdfSurface && canUseAskAI
           ? [{
               id: 'ai' as const,
               label: 'Ask AI',
@@ -4961,37 +5128,38 @@ const App: React.FC = () => {
     <AnnotationPanel
       isOpen={isOpen}
       presentation={presentation}
-      blocks={blocks}
-      annotations={allAnnotations}
-      selectedId={selectedAnnotationId ?? selectedCodeAnnotationId}
-      onSelect={handleSelectAnnotation}
-      onDelete={handleDeleteAnnotation}
-      onEdit={handleEditAnnotation}
-      codeAnnotations={codeAnnotations}
-      onSelectCodeAnnotation={handleSelectCodeAnnotation}
-      onDeleteCodeAnnotation={handleDeleteCodeAnnotation}
-      onEditCodeAnnotation={handleEditCodeAnnotation}
-      sharingEnabled={canShareCurrentSession}
+      blocks={isPdfSurface ? [] : blocks}
+      annotations={isPdfSurface ? pdfPanelAnnotations : allAnnotations}
+      pdfLabels={isPdfSurface ? pdfDocument?.labels : undefined}
+      selectedId={selectedAnnotationId ?? (isPdfSurface ? null : selectedCodeAnnotationId)}
+      onSelect={isPdfSurface ? handleSelectPdfAnnotation : handleSelectAnnotation}
+      onDelete={isPdfSurface ? handleDeletePdfAnnotation : handleDeleteAnnotation}
+      onEdit={isPdfSurface ? handleEditPdfAnnotation : handleEditAnnotation}
+      codeAnnotations={isPdfSurface ? [] : codeAnnotations}
+      onSelectCodeAnnotation={isPdfSurface ? undefined : handleSelectCodeAnnotation}
+      onDeleteCodeAnnotation={isPdfSurface ? undefined : handleDeleteCodeAnnotation}
+      onEditCodeAnnotation={isPdfSurface ? undefined : handleEditCodeAnnotation}
+      sharingEnabled={!isPdfSurface && canShareCurrentSession}
       width={presentation === 'panel' ? `var(--rpanel-w, ${panelResize.width}px)` : undefined}
-      editorAnnotations={editorAnnotations}
-      onDeleteEditorAnnotation={deleteEditorAnnotation}
+      editorAnnotations={isPdfSurface ? undefined : editorAnnotations}
+      onDeleteEditorAnnotation={isPdfSurface ? undefined : deleteEditorAnnotation}
       onClose={presentation === 'panel' ? () => setIsPanelOpen(false) : closeCompactPlanSurface}
-      onQuickCopy={async () => {
+      onQuickCopy={isPdfSurface ? undefined : async () => {
         const output = getCurrentFeedbackPayload();
         return copyTextToClipboard(wrapCopiedFeedback(output));
       }}
-      onShare={canShareCurrentSession ? () => {
+      onShare={!isPdfSurface && canShareCurrentSession ? () => {
         if (presentation === 'panel') setIsPanelOpen(false);
         else closeCompactPlanSurface(false);
         setInitialExportTab('share');
         setShowExport(true);
       } : undefined}
-      otherFileAnnotations={otherFileAnnotations}
-      directEdits={directEditsPanelInfo?.map((item) => ({
+      otherFileAnnotations={isPdfSurface ? undefined : otherFileAnnotations}
+      directEdits={isPdfSurface ? null : directEditsPanelInfo?.map((item) => ({
         ...item,
         onDiscard: item.id === 'plan' ? () => handleDiscardEdits() : undefined,
       })) ?? null}
-      onOtherFileAnnotationsClick={handleFlashAnnotatedFiles}
+      onOtherFileAnnotationsClick={isPdfSurface ? undefined : handleFlashAnnotatedFiles}
       readOnly={documentReadOnly}
     />
   );
@@ -5019,11 +5187,12 @@ const App: React.FC = () => {
     !isPlanDiffActive &&
     !goalSetupMode &&
     !isHtmlSurface &&
+    !isPdfSurface &&
     !(annotateSource === 'folder' && !markdown && !linkedDocHook.isActive);
   // Mobile Safari paints the browser-controls backdrop from the document/app
   // canvas, not from the nested document scroller. Keep that canvas continuous
   // with the active surface so a card-backed plan does not end in a dark band.
-  const browserCanvas = isHtmlSurface || gridEnabled ? 'background' : 'card';
+  const browserCanvas = isHtmlSurface || isPdfSurface || gridEnabled ? 'background' : 'card';
   if (isLoading && !isSharedSession) {
     return (
       <ThemeProvider defaultTheme="dark" manageFavicon>
@@ -5068,13 +5237,12 @@ const App: React.FC = () => {
           origin={origin}
           isSubmitting={isSubmitting}
           isExiting={isExiting}
-          isPanelOpen={!isPdfSurface && isRightPanelVisible && rightSidebarTab === 'annotations'}
-          documentPanelAvailable={!isPdfSurface}
+          isPanelOpen={isRightPanelVisible && rightSidebarTab === 'annotations'}
           aiAvailable={!isPdfSurface && canUseAskAI}
-          isAIChatOpen={isRightPanelVisible && rightSidebarTab === 'ai'}
+          isAIChatOpen={!isPdfSurface && isRightPanelVisible && rightSidebarTab === 'ai'}
           aiHasMessages={visibleAIMessages.length > 0}
           hasAnyAnnotations={hasAnyAnnotations || hasDirectEdits || hasSavedFileChanges}
-          annotationCount={feedbackAnnotationCount}
+          annotationCount={panelAnnotationCount}
           linkedDocIsActive={linkedDocHook.isActive}
           callbackShareUrlReady={callbackShareUrlReady}
           canShareCurrentSession={canShareCurrentSession}
@@ -5138,7 +5306,7 @@ const App: React.FC = () => {
             id="pn-compact-plan-annotations"
             title="Annotations"
             subtitle={compactDocumentTitle}
-            count={feedbackAnnotationCount}
+            count={panelAnnotationCount}
             onClose={closeCompactPlanSurface}
           >
             <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1">
@@ -5147,7 +5315,7 @@ const App: React.FC = () => {
           </CompactPlanStage>
         )}
 
-        {isCompactAIOpen && canUseAskAI && (
+        {isCompactAIOpen && !isPdfSurface && canUseAskAI && (
           <CompactPlanStage
             id="pn-compact-plan-ai"
             title="Ask AI"
@@ -5286,6 +5454,25 @@ const App: React.FC = () => {
               message={draftBanner ? draftBannerMessage(draftBanner) : ''}
               confirmText="Restore"
               cancelText="Dismiss"
+              showCancel
+            />
+            <ConfirmDialog
+              isOpen={showPdfDiscardWarning}
+              onClose={() => {
+                pdfDiscardActionRef.current = null;
+                setShowPdfDiscardWarning(false);
+              }}
+              onConfirm={() => {
+                const action = pdfDiscardActionRef.current;
+                pdfDiscardActionRef.current = null;
+                setShowPdfDiscardWarning(false);
+                setPdfDirty(false);
+                action?.();
+              }}
+              title="Discard unsaved PDF annotations?"
+              message="Your sidecar changes have not been saved. The PDF itself has not been modified."
+              confirmText="Discard"
+              cancelText="Keep reviewing"
               showCancel
             />
             <div ref={planAreaRef} className={`${isHtmlSurface || isPdfSurface ? 'h-full flex flex-col' : 'min-h-full flex flex-col items-center px-2 py-3 md:px-10 md:py-8 xl:px-16'} relative z-10`}>
@@ -5513,13 +5700,65 @@ const App: React.FC = () => {
                   />
                 )}
                 {isPdfSurface ? (
-                  <PdfAnnotatorView
-                    key={pdfSurface.url}
-                    pdfUrl={pdfSurface.url}
-                    annotationsUrl={pdfSurface.annotationsUrl}
-                    onBack={annotateSource === 'folder' ? handleLinkedDocBack : undefined}
-                    onDirtyChange={setPdfDirty}
-                  />
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div data-print-hide className="flex min-h-10 flex-shrink-0 items-center gap-2 border-b border-border/50 bg-card/70 px-3 py-1.5">
+                      {annotateSource === 'folder' && (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => { maybeConfirmPdfDiscard(handleLinkedDocBack); }}
+                        >
+                          Back to files
+                        </Button>
+                      )}
+                      <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:block">
+                        Select text for a comment or quick label. Hold Alt and drag for an area annotation.
+                      </span>
+                      <span
+                        className={`ml-auto hidden truncate text-[11px] sm:block ${pdfSaveStatus === 'error' ? 'text-destructive' : pdfDirty ? 'text-primary' : 'text-muted-foreground'}`}
+                        title={pdfSaveMessage}
+                      >
+                        {pdfSaveMessage || (pdfDirty ? 'Unsaved changes' : 'PDF annotations')}
+                      </span>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={!pdfDocument || pdfSaveStatus === 'loading' || pdfSaveStatus === 'saving' || !pdfDirty}
+                        onClick={() => { void persistPdfAnnotations(); }}
+                      >
+                        {pdfSaveStatus === 'saving' ? 'Saving…' : pdfDirty ? 'Save' : 'Saved'}
+                      </Button>
+                      <Button
+                        size="xs"
+                        disabled={!pdfDocument || pdfSaveStatus === 'loading' || pdfSaveStatus === 'saving'}
+                        onClick={() => {
+                          void persistPdfAnnotations().then((saved) => {
+                            if (saved) headerHandlersRef.current.handleAnnotateExit();
+                          });
+                        }}
+                      >
+                        Save &amp; Done
+                      </Button>
+                    </div>
+                    {pdfDocument ? (
+                      <PdfAnnotatorView
+                        key={pdfSurface.url}
+                        pdfUrl={pdfSurface.url}
+                        annotations={pdfAnnotations}
+                        labels={pdfDocument.labels}
+                        pageMapping={pdfDocument.pageMapping}
+                        selectedAnnotationId={selectedAnnotationId}
+                        readOnly={documentReadOnly}
+                        onAddAnnotation={handleAddPdfAnnotation}
+                        onSelectAnnotation={handleSelectPdfAnnotation}
+                        onUpdateAreaAnnotation={handleUpdatePdfArea}
+                      />
+                    ) : (
+                      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                        {pdfSaveStatus === 'error' ? pdfSaveMessage : 'Loading PDF annotations…'}
+                      </div>
+                    )}
+                  </div>
                 ) : renderAs === 'html' ? (
                   <HtmlViewer
                     key={(liveApp ? 'live-app' : linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan') + (isPlanDiffActive && htmlDiffHtml ? ':diff' : '')}
@@ -5663,12 +5902,12 @@ const App: React.FC = () => {
               ancestor (`contents` = no layout box). */}
           <div className="contents group/sidebar">
           {/* Resize Handle */}
-          {!isPdfSurface && isRightPanelVisible && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || canUseAskAI) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" hideHoverTrack tooltip={RESIZE_HANDLE_TOOLTIP} onCollapse={() => setIsPanelOpen(false)} />}
+          {isRightPanelVisible && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || (!isPdfSurface && canUseAskAI)) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" hideHoverTrack tooltip={RESIZE_HANDLE_TOOLTIP} onCollapse={() => setIsPanelOpen(false)} />}
 
           {/* Annotation Panel */}
           {renderAnnotationPanel(
             'panel',
-            !isPdfSurface && isRightPanelVisible && rightSidebarTab === 'annotations' && wideModeType === null && !goalSetupMode,
+            isRightPanelVisible && rightSidebarTab === 'annotations' && wideModeType === null && !goalSetupMode,
           )}
           {!isPdfSurface && isRightPanelVisible && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAskAI && (
             <aside
