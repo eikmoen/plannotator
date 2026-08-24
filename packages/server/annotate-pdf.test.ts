@@ -23,8 +23,10 @@ function pdfFixture() {
   mkdirSync(join(directory, "metadata"));
   const bytes = Buffer.from("%PDF-1.4\n0123456789\n%%EOF\n");
   const pdfPath = join(directory, "source.pdf");
+  const markdownPath = join(directory, "notes.md");
   writeFileSync(pdfPath, bytes);
-  return { directory, bytes, pdfPath };
+  writeFileSync(markdownPath, "# Notes\n");
+  return { directory, bytes, pdfPath, markdownPath };
 }
 
 function annotation(): PdfAnnotation {
@@ -87,5 +89,20 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Bun PDF annotate server"
     const dynamicRange = await fetch(`${server.url}${doc.pdf.url}`, { headers: { Range: "bytes=0-3" } });
     expect(dynamicRange.status).toBe(206);
     expect(Buffer.from(await dynamicRange.arrayBuffer()).toString()).toBe("%PDF");
+
+    const markdownDoc = await fetch(`${server.url}/api/doc?path=${encodeURIComponent(fixture.markdownPath)}&base=${encodeURIComponent(fixture.directory)}&doc=1`).then((response) => response.json());
+    expect(markdownDoc.sourceSave).toMatchObject({ enabled: true, kind: "local-text-file", scope: "folder-file" });
+    const sourceSave = await fetch(`${server.url}/api/source/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        path: markdownDoc.sourceSave.path,
+        text: "# Revised notes\n",
+        baseHash: markdownDoc.sourceSave.hash,
+        baseEol: markdownDoc.sourceSave.eol,
+      }),
+    });
+    expect(sourceSave.status).toBe(200);
+    expect(readFileSync(fixture.markdownPath, "utf8")).toBe("# Revised notes\n");
   });
 });

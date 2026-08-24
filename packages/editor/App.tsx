@@ -206,6 +206,7 @@ import { fetchSourceDocumentSnapshot, probeSourceSave } from './sourceDocumentCl
 import { reconcileSourceDocuments, type SourceDocumentReconcileEvent } from './sourceDocumentReconciliation';
 import {
   buildSourceWatchSubscription,
+  canEditLinkedSourceDocument,
   normalizeBrowserPath,
   pathIsInsideDir,
 } from './sourceDocumentPaths';
@@ -477,6 +478,9 @@ const App: React.FC = () => {
   const [sourceConverted, setSourceConverted] = useState(false);
   const [renderAs, setRenderAs] = useState<'markdown' | 'html'>('markdown');
   const [pdfSurface, setPdfSurface] = useState<{ url: string; annotationsUrl: string } | null>(null);
+  // Stays true after navigating away from a directly opened PDF so Markdown
+  // selected from the same file pane keeps the folder-style edit capability.
+  const [pdfNavigationMode, setPdfNavigationMode] = useState(false);
   const [pdfDocument, setPdfDocument] = useState<PdfAnnotationDocument | null>(null);
   const [pdfAnnotations, setPdfAnnotations] = useState<PdfAnnotation[]>([]);
   const [pdfDirty, setPdfDirty] = useState(false);
@@ -1599,6 +1603,7 @@ const App: React.FC = () => {
       fileBrowser.setActiveFile(absolutePath);
       setRightSidebarTab('annotations');
       setIsPanelOpen(true);
+      setPdfNavigationMode(true);
       setPdfSurface({
         url: `/api/pdf?${params.toString()}`,
         annotationsUrl: `/api/pdf/annotations?${params.toString()}`,
@@ -2174,9 +2179,9 @@ const App: React.FC = () => {
     }
   }, [pendingSharedAnnotations, clearPendingSharedAnnotations, resetExternalHighlights]);
 
-  // Markdown edit mode: single consolidated gate. The editor only ever opens on
-  // the main plan/file markdown — never on HTML surfaces, archive/goal-setup
-  // views, linked docs, messages, folder pickers, diff view, or shared sessions.
+  // Markdown edit mode: single consolidated gate. Linked documents remain
+  // read-only except for folder sessions and file-pane navigation that began
+  // from a PDF; those paths receive a bounded source-save capability.
   const canEditMarkdown =
     renderAs !== 'html' &&
     // editStats non-null keeps the toggle available after committing an
@@ -2185,7 +2190,12 @@ const App: React.FC = () => {
     (activeEditableDocument?.sourceSave?.enabled || displayedMarkdown !== '' || editStats !== null) &&
     !archive.archiveMode &&
     !goalSetupMode &&
-    (!linkedDocHook.isActive || (annotateSource === 'folder' && activeEditableDocument?.sourceSave?.enabled)) &&
+    canEditLinkedSourceDocument({
+      linked: linkedDocHook.isActive,
+      sourceSaveEnabled: activeEditableDocument?.sourceSave?.enabled === true,
+      annotateSource,
+      pdfNavigationMode,
+    }) &&
     !isPlanDiffActive &&
     !isSharedSession &&
     annotateSource !== 'message' &&
@@ -3021,6 +3031,7 @@ const App: React.FC = () => {
         } else if (data.renderAs === 'pdf' && data.pdf) {
           setRightSidebarTab('annotations');
           setIsPanelOpen(true);
+          setPdfNavigationMode(true);
           setPdfDirty(false);
           setPdfSurface(data.pdf);
           setMarkdown('');

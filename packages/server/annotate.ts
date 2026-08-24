@@ -288,6 +288,16 @@ export async function startAnnotateServer(
     throw new Error("PDF annotation currently requires single-file annotate mode");
   }
   const pdfSource = renderPdf ? describePdfSource(resolvePath(filePath)) : null;
+  // A PDF opened directly from a workspace still uses the file pane as a
+  // document navigator. Give markdown selected there the same bounded
+  // source-save capability as folder mode, rooted at cwd when the PDF belongs
+  // to it and otherwise at the PDF package directory.
+  const pdfNavigationRoot = pdfSource
+    ? isWithinDirectory(pdfSource.pdfPath, process.cwd())
+      ? process.cwd()
+      : pdfSource.sourceDirectory
+    : undefined;
+  const editableNavigationRoot = mode === "annotate-folder" ? folderPath : pdfNavigationRoot;
 
   // Per-file version history → powers the native version diff in annotate mode.
   // Unlike the plan flow (slug = first-heading + date), annotate keys history by
@@ -916,7 +926,7 @@ export async function startAnnotateServer(
               sourceSaveFilePath: singleFileSourceSaveEligible
                 ? initialSingleFileSourcePath ?? filePath
                 : undefined,
-              sourceSaveFolderPath: mode === "annotate-folder" ? folderPath : undefined,
+              sourceSaveFolderPath: editableNavigationRoot,
               onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
               rootPaths: getReferenceRootPaths(),
               annotateHistory:
@@ -948,10 +958,10 @@ export async function startAnnotateServer(
             if (singleFileSourceSaveEligible) {
               const capability = createSourceSaveCapability("single-file", initialSingleFileSourcePath ?? filePath);
               targetPath = capability.enabled ? capability.path : initialSingleFileSourcePath;
-            } else if (mode === "annotate-folder" && folderPath && typeof body.path === "string") {
+            } else if (editableNavigationRoot && typeof body.path === "string") {
               targetPath = body.allowMissingBase
-                ? resolveFolderSourceFileForSave(body.path, folderPath)
-                : resolveFolderSourceFile(body.path, folderPath);
+                ? resolveFolderSourceFileForSave(body.path, editableNavigationRoot)
+                : resolveFolderSourceFile(body.path, editableNavigationRoot);
               if (
                 body.allowMissingBase &&
                 targetPath &&
@@ -972,7 +982,7 @@ export async function startAnnotateServer(
             const result = saveSourceFileAtomic(targetPath, body.text, body.baseHash, {
               allowMissingBase: body.allowMissingBase === true,
               missingBaseEol: body.baseEol,
-              allowedRoot: mode === "annotate-folder" ? folderPath : undefined,
+              allowedRoot: editableNavigationRoot,
             });
             const status = result.ok
               ? 200

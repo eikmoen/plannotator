@@ -264,6 +264,15 @@ export async function startAnnotateServer(options: {
 		throw new Error("PDF annotation currently requires single-file annotate mode");
 	}
 	const pdfSource = options.renderPdf ? describePdfSource(resolvePath(options.filePath)) : null;
+	// Direct PDF sessions retain the file pane as an editable document navigator.
+	// Keep writes inside cwd when the source belongs to this workspace, otherwise
+	// inside the PDF package directory.
+	const pdfNavigationRoot = pdfSource
+		? isWithinDirectory(pdfSource.pdfPath, process.cwd())
+			? process.cwd()
+			: pdfSource.sourceDirectory
+		: undefined;
+	const editableNavigationRoot = options.mode === "annotate-folder" ? options.folderPath : pdfNavigationRoot;
 	const sharingEnabled =
 		options.sharingEnabled ?? resolveSharingEnabled(loadConfig());
 	const shareBaseUrl =
@@ -942,7 +951,7 @@ export async function startAnnotateServer(options: {
 				sourceSaveFilePath: singleFileSourceSaveEligible
 					? initialSingleFileSourcePath ?? options.filePath
 					: undefined,
-				sourceSaveFolderPath: options.mode === "annotate-folder" ? options.folderPath : undefined,
+				sourceSaveFolderPath: editableNavigationRoot,
 				onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
 				rootPaths: getReferenceRootPaths(),
 				annotateHistory:
@@ -968,10 +977,10 @@ export async function startAnnotateServer(options: {
 			if (singleFileSourceSaveEligible) {
 				const capability = createSourceSaveCapability("single-file", initialSingleFileSourcePath ?? options.filePath);
 				targetPath = capability.enabled ? capability.path : initialSingleFileSourcePath;
-			} else if (options.mode === "annotate-folder" && options.folderPath && typeof body.path === "string") {
+			} else if (editableNavigationRoot && typeof body.path === "string") {
 				targetPath = body.allowMissingBase
-					? resolveFolderSourceFileForSave(body.path, options.folderPath)
-					: resolveFolderSourceFile(body.path, options.folderPath);
+					? resolveFolderSourceFileForSave(body.path, editableNavigationRoot)
+					: resolveFolderSourceFile(body.path, editableNavigationRoot);
 				if (
 					body.allowMissingBase &&
 					targetPath &&
@@ -990,7 +999,7 @@ export async function startAnnotateServer(options: {
 			const result = saveSourceFileAtomic(targetPath, body.text, body.baseHash, {
 				allowMissingBase: body.allowMissingBase === true,
 				missingBaseEol: body.baseEol,
-				allowedRoot: options.mode === "annotate-folder" ? options.folderPath : undefined,
+				allowedRoot: editableNavigationRoot,
 			});
 			const status = result.ok
 				? 200

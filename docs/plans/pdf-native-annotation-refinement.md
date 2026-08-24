@@ -14,6 +14,7 @@ Implemented locally:
 - `PdfAnnotatorView` is reduced to the PDF renderer and coordinate-selection adapter;
 - sidecar state, dirty tracking, native discard confirmation, `Save`, `Save & Done`, and keyboard saving are owned by `App`;
 - the remote helper retains the 2 MB text limit but delegates large PDFs to the PDF-aware fork;
+- Markdown selected from the file pane after a direct PDF open receives a workspace-bounded source-save capability and can enter normal direct-edit mode;
 - focused projection, panel, label, sidecar, target, server, helper, Markdown regression, typecheck, and Pi production-build validation pass.
 
 Pending: close the still-running prototype session and reopen the Green IT PDF for the final EikLaptop interaction check.

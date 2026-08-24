@@ -9,6 +9,18 @@ export {
   pathIsInsideDir,
 } from '@plannotator/shared/browser-paths';
 
+export function canEditLinkedSourceDocument(options: {
+  linked: boolean;
+  sourceSaveEnabled: boolean;
+  annotateSource: 'file' | 'message' | 'folder' | null;
+  pdfNavigationMode: boolean;
+}): boolean {
+  if (!options.linked) return true;
+  return options.sourceSaveEnabled && (
+    options.annotateSource === 'folder' || options.pdfNavigationMode
+  );
+}
+
 export interface SourceWatchSubscription {
   query: string;
   dirs: string[];

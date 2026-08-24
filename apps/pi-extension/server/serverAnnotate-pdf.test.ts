@@ -41,7 +41,9 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Pi PDF annotate server",
     mkdirSync(join(directory, "metadata"));
     const bytes = Buffer.from("%PDF-1.4\nabcdefghij\n%%EOF\n");
     const pdfPath = join(directory, "source.pdf");
+    const markdownPath = join(directory, "notes.md");
     writeFileSync(pdfPath, bytes);
+    writeFileSync(markdownPath, "# Notes\n");
 
     const server = await startAnnotateServer({
       markdown: "",
@@ -82,5 +84,20 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Pi PDF annotate server",
     const dynamicRange = await fetch(`${server.url}${doc.pdf.url}`, { headers: { Range: "bytes=0-3" } });
     expect(dynamicRange.status).toBe(206);
     expect(Buffer.from(await dynamicRange.arrayBuffer()).toString()).toBe("%PDF");
+
+    const markdownDoc = await fetch(`${server.url}/api/doc?path=${encodeURIComponent(markdownPath)}&base=${encodeURIComponent(directory)}&doc=1`).then((response) => response.json());
+    expect(markdownDoc.sourceSave).toMatchObject({ enabled: true, kind: "local-text-file", scope: "folder-file" });
+    const sourceSave = await fetch(`${server.url}/api/source/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        path: markdownDoc.sourceSave.path,
+        text: "# Revised notes\n",
+        baseHash: markdownDoc.sourceSave.hash,
+        baseEol: markdownDoc.sourceSave.eol,
+      }),
+    });
+    expect(sourceSave.status).toBe(200);
+    expect(readFileSync(markdownPath, "utf8")).toBe("# Revised notes\n");
   });
 });
