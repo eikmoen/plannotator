@@ -202,6 +202,11 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
       ref={toolbarRef}
       className="annotation-toolbar fixed z-[100] bg-popover border border-border rounded-lg shadow-2xl"
       style={style}
+      // PDF selection tips are owned by react-pdf-highlighter, whose root
+      // dismisses the active selection on pointerdown outside its tip DOM.
+      // This toolbar is portalled to body, so stop the earlier pointer event as
+      // well as mousedown or its controls unmount before their click can fire.
+      onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}

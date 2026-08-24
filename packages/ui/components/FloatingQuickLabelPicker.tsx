@@ -125,6 +125,10 @@ export const FloatingQuickLabelPicker: React.FC<FloatingQuickLabelPickerProps> =
         ...(position.flipAbove ? { transform: 'translateY(-100%)' } : {}),
         animation: `${animName} 0.12s ease-out`,
       }}
+      // The picker is a nested portal. In PDF mode, allowing pointerdown to
+      // reach react-pdf-highlighter dismisses the selection and unmounts this
+      // picker before its label button receives click.
+      onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <style>{`
