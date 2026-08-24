@@ -17,7 +17,8 @@ Implemented locally:
 - Markdown selected from the file pane after a direct PDF open receives a workspace-bounded source-save capability and can enter normal direct-edit mode;
 - portalled PDF selection controls isolate pointer events from `react-pdf-highlighter`, so quick-label clicks create annotations instead of dismissing the selection before `click` fires;
 - PDF document-level comments reuse the native global-comment composer and panel cards, persist separately in `metadata/annotations-global.json`, and are mirrored into `annotations.md` without changing `source.pdf`;
-- focused projection, panel, label, global-comment, sidecar, target, server, helper, Markdown regression, typecheck, and Pi production-build validation pass.
+- the reader adds page/zoom/search/outline/thumbnail controls, fingerprint-keyed reading-position restoration, lazy thumbnail work, and pointer-release selection finalization;
+- focused projection, panel, label, global-comment, reader, sidecar, target, server, helper, Markdown regression, typecheck, and Pi production-build validation pass.
 
 Pending: close the still-running prototype session and reopen the Green IT PDF for the final EikLaptop interaction check.
 
