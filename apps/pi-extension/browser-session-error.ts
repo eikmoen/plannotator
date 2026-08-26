@@ -6,8 +6,14 @@
  * server/browser import graph.
  */
 export const BROWSER_SESSION_STOPPED = "PlannotatorBrowserSessionStopped";
+export const BROWSER_SESSION_REOPENED = "PlannotatorBrowserSessionReopened";
 
 /** True when an error is the typed stopped-session outcome, not a real failure. */
 export function isBrowserSessionStoppedError(err: unknown): boolean {
 	return err instanceof Error && err.name === BROWSER_SESSION_STOPPED;
+}
+
+/** True when startup preserved and reopened an already-running session. */
+export function isBrowserSessionReopenedError(err: unknown): boolean {
+	return err instanceof Error && err.name === BROWSER_SESSION_REOPENED;
 }

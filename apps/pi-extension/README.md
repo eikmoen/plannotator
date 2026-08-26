@@ -272,6 +272,8 @@ Run `/plannotator-annotate <file.md>` to render, annotate, or directly edit Mark
 
 PDF sessions save editable data beside the source in `metadata/annotations.json` and a bounded section in `annotations.md`. Existing `metadata/annotations-raw.json`, hidden imported annotations, and page mappings remain compatible. Ordinary **Save** and **Save & Done** operations do not modify the PDF bytes.
 
+In fixed-port remote mode, only one review surface can be active at a time. If another command runs after its browser tab was closed, Plannotator preserves and reopens the existing session instead of reporting a raw port conflict or preempting its draft. Finish it with **Save & Done**, or use **Close** to discard it, then retry the new command. Pi sessions are registered in the standard Plannotator session registry for `plannotator sessions` discovery; the local server probe also recovers sessions started by older Pi extension versions.
+
 URL targets work too. A loopback `http` URL that answers with an HTML page (a running dev app, e.g. `http://localhost:5173`) opens **live**: the app is served through a local reverse proxy and annotated in place, with HMR and WebSockets passed through. `--static` forces the classic markdown conversion; `--app` requires a live session and errors instead of falling back. Live sessions are unavailable in remote mode (`PLANNOTATOR_REMOTE`).
 
 ### Annotate last message

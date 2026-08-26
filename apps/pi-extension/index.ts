@@ -73,7 +73,10 @@ import {
 	stripPlanningOnlyTools,
 } from "./tool-scope.ts";
 import { isRemoteSession, isUrlHostOverridden } from "./server/network.ts";
-import { isBrowserSessionStoppedError } from "./browser-session-error.ts";
+import {
+	isBrowserSessionReopenedError,
+	isBrowserSessionStoppedError,
+} from "./browser-session-error.ts";
 import { classifyAnnotateOutcome } from "./annotate-outcome.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -204,6 +207,17 @@ function reportBackgroundError(ctx: ExtensionContext, message: string, err: unkn
 		return;
 	}
 	safeNotify(ctx, `${message}: ${detail}`, "error", origin);
+}
+
+function notifyBrowserStartupIssue(ctx: ExtensionContext, label: string, err: unknown): string {
+	const detail = getStartupErrorMessage(err);
+	if (isBrowserSessionReopenedError(err)) {
+		safeNotify(ctx, detail, "info");
+		return detail;
+	}
+	const message = `Failed to start ${label}: ${detail}`;
+	safeNotify(ctx, message, "error");
+	return message;
 }
 
 function excerptText(text: string, maxChars = 1000): string {
@@ -352,8 +366,9 @@ export default function plannotator(pi: ExtensionAPI): void {
 		// Browser sessions deliberately outlive in-process session replacement so
 		// a tab opened before /new can still deliver feedback to the replacement
 		// session (withCurrentPiSessionFallbackHeader). On real process teardown
-		// the OS frees the ports, and port self-preemption reclaims any stale
-		// fixed-port session on the next command.
+		// the OS frees the ports. A responsive fixed-port session is preserved and
+		// reopened by the next command; self-preemption remains only as the fallback
+		// for an unresponsive same-process server.
 	});
 
 	// ── Flags ────────────────────────────────────────────────────────────
@@ -705,10 +720,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 						reportBackgroundError(ctx, "Plannotator code review session failed", err, origin);
 					});
 			} catch (err) {
-				ctx.ui.notify(
-					`Failed to start code review UI: ${getStartupErrorMessage(err)}`,
-					"error",
-				);
+				notifyBrowserStartupIssue(ctx, "code review UI", err);
 			}
 		},
 	});
@@ -1013,10 +1025,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 						reportBackgroundError(ctx, "Plannotator annotation session failed", err, origin);
 					});
 			} catch (err) {
-				ctx.ui.notify(
-					`Failed to start annotation UI: ${getStartupErrorMessage(err)}`,
-					"error",
-				);
+				notifyBrowserStartupIssue(ctx, "annotation UI", err);
 			}
 		},
 	});
@@ -1107,10 +1116,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 						reportBackgroundError(ctx, "Plannotator message annotation session failed", err, origin);
 					});
 			} catch (err) {
-				ctx.ui.notify(
-					`Failed to start annotation UI: ${getStartupErrorMessage(err)}`,
-					"error",
-				);
+				notifyBrowserStartupIssue(ctx, "annotation UI", err);
 			}
 		},
 	});
@@ -1283,8 +1289,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 						details: { approved: false },
 					};
 				}
-				const message = `Failed to start plan review UI: ${getStartupErrorMessage(err)}`;
-				ctx.ui.notify(message, "error");
+				const message = notifyBrowserStartupIssue(ctx, "plan review UI", err);
 				return {
 					content: [{ type: "text", text: message }],
 					details: { approved: false },

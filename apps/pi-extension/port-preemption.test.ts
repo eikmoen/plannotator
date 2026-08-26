@@ -98,15 +98,15 @@ describe("startServerWithSelfPreemption", () => {
 });
 
 // Every fixed-port server start in plannotator-browser.ts must go through the
-// self-preemption wrapper; an unwrapped call site would wedge that surface
-// forever once a session is abandoned (#1159). Source scan pins all four.
-describe("self-preemption call sites", () => {
+// recovery wrapper. It probes and reopens responsive sessions before the
+// self-preemption fallback, preserving drafts when a browser tab was closed.
+describe("session recovery call sites", () => {
 	test("all four server starts in plannotator-browser.ts are wrapped", () => {
 		const src = readFileSync(join(import.meta.dir, "plannotator-browser.ts"), "utf-8");
 		const count = (needle: string) => src.split(needle).length - 1;
-		expect(count("await startServerWithSelfPreemption(() => startPlanReviewServer(")).toBe(2);
-		expect(count("await startServerWithSelfPreemption(() => startReviewServer(")).toBe(1);
-		expect(count("await startServerWithSelfPreemption(() => startAnnotateServer(")).toBe(1);
+		expect(count("await startServerForBrowser(() => startPlanReviewServer(")).toBe(2);
+		expect(count("await startServerForBrowser(() => startReviewServer(")).toBe(1);
+		expect(count("await startServerForBrowser(() => startAnnotateServer(")).toBe(1);
 	});
 });
 

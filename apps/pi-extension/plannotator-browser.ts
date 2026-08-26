@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createWorktreePool, type WorktreePool } from "./generated/worktree-pool.ts";
@@ -21,9 +21,23 @@ import {
 	type VcsSelection,
 	unstageFile,
 } from "./server.ts";
-import { BROWSER_SESSION_STOPPED } from "./browser-session-error.ts";
-import { openBrowser, isRemoteSession } from "./server/network.ts";
+import {
+	BROWSER_SESSION_REOPENED,
+	BROWSER_SESSION_STOPPED,
+} from "./browser-session-error.ts";
+import {
+	buildAdvertisedUrl,
+	getServerPorts,
+	openBrowser,
+	isRemoteSession,
+} from "./server/network.ts";
 import { detectProjectName } from "./server/project.ts";
+import {
+	listSessions,
+	registerSession,
+	unregisterSession,
+	type SessionInfo,
+} from "./generated/sessions.ts";
 import { parsePRUrl, checkPRAuth, fetchPR } from "./server/pr.ts";
 import {
 	getMRLabel,
@@ -144,6 +158,89 @@ function delay(ms: number): Promise<void> {
 // exhausted explicit range.
 const PORT_IN_USE_PATTERN = /\bPort \d+ in use\b|\bPort selection .+ exhausted\b/;
 
+export interface ExistingBrowserSession {
+	url: string;
+	port: number;
+	mode: string;
+	label: string;
+	filePath?: string;
+	project?: string;
+}
+
+type ExistingSessionDiscoveryDependencies = {
+	fetchImpl?: typeof fetch;
+	registeredSessions?: () => SessionInfo[];
+	advertisedUrl?: (port: number) => string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function busyPortsFromError(err: unknown): number[] {
+	const message = err instanceof Error ? err.message : String(err);
+	const fixed = message.match(/\bPort (\d+) in use\b/);
+	if (fixed) return [Number(fixed[1])];
+	const range = message.match(/\bPort selection (\d+)-(\d+) exhausted\b/);
+	if (!range) return [];
+	const start = Number(range[1]);
+	const end = Number(range[2]);
+	if (!Number.isInteger(start) || !Number.isInteger(end) || end < start || end - start > 100) return [];
+	return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+/**
+ * Confirm that a busy fixed port belongs to a live Plannotator server.
+ * The process registry supplies a useful label when available, while the
+ * local /api/plan or /api/diff probe is authoritative and also recovers older
+ * Pi sessions that predate registry support.
+ */
+export async function discoverExistingBrowserSession(
+	port: number,
+	dependencies: ExistingSessionDiscoveryDependencies = {},
+): Promise<ExistingBrowserSession | undefined> {
+	const fetchImpl = dependencies.fetchImpl ?? fetch;
+	const registeredSessions = dependencies.registeredSessions ?? listSessions;
+	const advertisedUrl = dependencies.advertisedUrl ?? buildAdvertisedUrl;
+	const registered = registeredSessions().find((session) => session.port === port);
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 750);
+	try {
+		for (const endpoint of ["/api/plan", "/api/diff"] as const) {
+			const response = await fetchImpl(`http://127.0.0.1:${port}${endpoint}`, {
+				signal: controller.signal,
+			});
+			if (!response.ok) continue;
+			const payload: unknown = await response.json();
+			if (!isRecord(payload) || !isRecord(payload.serverConfig)) continue;
+			const isReview = endpoint === "/api/diff" && typeof payload.rawPatch === "string";
+			const mode = isReview
+				? "review"
+				: typeof payload.mode === "string"
+					? payload.mode
+					: typeof payload.plan === "string"
+						? "plan"
+						: registered?.mode;
+			if (!mode) continue;
+			const filePath = typeof payload.filePath === "string" ? payload.filePath : undefined;
+			const sourceInfo = typeof payload.sourceInfo === "string" ? payload.sourceInfo : undefined;
+			return {
+				url: advertisedUrl(port),
+				port,
+				mode,
+				label: registered?.label ?? sourceInfo ?? (filePath ? basename(filePath) : mode),
+				filePath,
+				project: registered?.project,
+			};
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 // A fixed-port session (remote mode) abandoned without a decision keeps its
 // server listening forever in this long-lived pi process, so the next
 // command's bind fails (#1159). Live tracked sessions are the only thing
@@ -169,12 +266,56 @@ export async function startServerWithSelfPreemption<T>(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (!PORT_IN_USE_PATTERN.test(message) || !stopPrevious(startedAt)) throw err;
-		// A fresh command is the user asking for a new review surface, so stale
-		// same-process sessions lose the port. Random-port local sessions never
-		// collide, so concurrent local sessions are untouched; a port held by
-		// another process still fails after the retry.
+		// This remains a fallback for an unresponsive same-process server. Live
+		// sessions are discovered and reopened before startup, so their drafts are
+		// preserved rather than preempted.
 		await delay(150);
 		return await start();
+	}
+}
+
+function createSessionReopenedError(existing: ExistingBrowserSession, requestedLabel: string): Error {
+	const target = existing.filePath ?? existing.label;
+	const error = new Error(
+		`An existing Plannotator session was reopened for ${target}. ` +
+		`Use Save & Done to preserve it, or Close to discard it, then retry opening ${requestedLabel}.`,
+	);
+	error.name = BROWSER_SESSION_REOPENED;
+	return error;
+}
+
+async function reopenExistingSession(
+	ctx: ExtensionContext,
+	ports: readonly number[],
+	requestedLabel: string,
+): Promise<void> {
+	for (const port of ports) {
+		const existing = await discoverExistingBrowserSession(port);
+		if (!existing) continue;
+		await openBrowserForServer(existing.url, ctx);
+		throw createSessionReopenedError(existing, requestedLabel);
+	}
+}
+
+async function startServerForBrowser<T>(
+	start: () => Promise<T>,
+	ctx: ExtensionContext,
+	requestedLabel: string,
+): Promise<T> {
+	const configuration = getServerPorts();
+	// A single configured/fixed port represents one remote review surface. Probe
+	// before binding so a responsive session is reopened instead of destroyed.
+	if (configuration.portSource !== "random" && configuration.ports.length === 1) {
+		await reopenExistingSession(ctx, configuration.ports, requestedLabel);
+	}
+	try {
+		return await startServerWithSelfPreemption(start);
+	} catch (err) {
+		const busyPorts = busyPortsFromError(err);
+		if (busyPorts.length > 0) {
+			await reopenExistingSession(ctx, busyPorts, requestedLabel);
+		}
+		throw err;
 	}
 }
 
@@ -205,19 +346,48 @@ async function buildLocalWorkspaceReview(
 	}, root, options);
 }
 
+type PersistentBrowserSessionDescriptor = Pick<SessionInfo, "mode" | "project" | "label">;
+
+function registerPersistentBrowserSession(
+	server: { url: string },
+	descriptor?: PersistentBrowserSessionDescriptor,
+): () => void {
+	if (!descriptor || !isRemoteSession()) return () => {};
+	const port = Number(new URL(server.url).port);
+	if (!Number.isInteger(port) || port <= 0) return () => {};
+	registerSession({
+		pid: process.pid,
+		port,
+		url: server.url,
+		mode: descriptor.mode,
+		project: descriptor.project,
+		label: descriptor.label,
+		startedAt: new Date().toISOString(),
+	});
+	return () => {
+		const owned = listSessions().find(
+			(session) => session.pid === process.pid && session.port === port && session.url === server.url,
+		);
+		if (owned) unregisterSession(process.pid);
+	};
+}
+
 async function openBrowserAndWait<T>(
 	server: { url: string; stop: () => void },
 	ctx: ExtensionContext,
 	waitForResult: () => Promise<T>,
+	descriptor?: PersistentBrowserSessionDescriptor,
 ): Promise<T> {
 	// The archive path never goes through startBrowserDecisionSession, so track
 	// its stop here for the session's lifetime: an abandoned archive tab would
 	// otherwise hold its fixed port beyond self-preemption's reach (#1159).
 	const unregister = registerSessionStop(server.stop);
+	const unregisterPersistent = registerPersistentBrowserSession(server, descriptor);
 	try {
 		await openBrowserForServer(server.url, ctx);
 		return await waitForDecisionWithCleanup(server, waitForResult);
 	} finally {
+		unregisterPersistent();
 		unregister();
 	}
 }
@@ -240,13 +410,16 @@ export function startBrowserDecisionSession<T>(
 	ctx: ExtensionContext,
 	waitForResult: () => Promise<T>,
 	signal?: AbortSignal,
+	descriptor?: PersistentBrowserSessionDescriptor,
 ): BrowserDecisionSession<T> {
 	let stopped = false;
+	const unregisterPersistent = registerPersistentBrowserSession(server, descriptor);
 	let stopReject: ((err: Error) => void) | undefined;
 	let decisionPromise: Promise<T> | undefined;
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
+		unregisterPersistent();
 		unregister();
 		signal?.removeEventListener("abort", stop);
 		server.stop();
@@ -307,16 +480,21 @@ export async function startPlanReviewBrowserSession(
 		throw new Error("Plannotator browser review is unavailable in this session.");
 	}
 
-	const server = await startServerWithSelfPreemption(() => startPlanReviewServer({
+	const project = detectProjectName();
+	const server = await startServerForBrowser(() => startPlanReviewServer({
 		plan: planContent,
 		htmlContent: planHtmlContent,
 		origin: "pi",
 		sharingEnabled: resolveSharingEnabled(loadConfig()),
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
-	}));
+	}), ctx, `plan review for ${project}`);
 
-	const session = startBrowserDecisionSession(server, ctx, server.waitForDecision, signal);
+	const session = startBrowserDecisionSession(server, ctx, server.waitForDecision, signal, {
+		mode: "plan",
+		project,
+		label: `plan-${project}`,
+	});
 	server.onDecision(() => {
 		setTimeout(() => session.stop(), 1500);
 	});
@@ -601,7 +779,8 @@ async function createCodeReviewBrowserSession(
 		}
 	}
 
-	const server = await startServerWithSelfPreemption(() => startReviewServer({
+	const reviewProject = detectProjectName();
+	const server = await startServerForBrowser(() => startReviewServer({
 		rawPatch,
 		gitRef,
 		error: diffError,
@@ -620,9 +799,13 @@ async function createCodeReviewBrowserSession(
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
 		onCleanup: worktreeCleanup,
-	}));
+	}), ctx, `code review for ${reviewProject}`);
 
-	return startBrowserDecisionSession(server, ctx, server.waitForDecision);
+	return startBrowserDecisionSession(server, ctx, server.waitForDecision, undefined, {
+		mode: "review",
+		project: reviewProject,
+		label: `review-${reviewProject}`,
+	});
 }
 
 export async function openMarkdownAnnotation(
@@ -704,7 +887,11 @@ export async function startMarkdownAnnotationSession(
 		}
 	}
 
-	const server = await startServerWithSelfPreemption(() => startAnnotateServer({
+	const annotateProject = detectProjectName();
+	const annotateLabel = mode === "annotate-last"
+		? "annotate-last"
+		: `annotate-${folderPath ? basename(folderPath) : basename(filePath)}`;
+	const server = await startServerForBrowser(() => startAnnotateServer({
 		markdown: resolvedMarkdown,
 		filePath,
 		origin: "pi",
@@ -726,10 +913,14 @@ export async function startMarkdownAnnotationSession(
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
 		agentCwd: ctx.cwd,
-		project: detectProjectName(),
-	}));
+		project: annotateProject,
+	}), ctx, mode === "annotate-last" ? "the latest message" : filePath);
 
-	return startBrowserDecisionSession(server, ctx, server.waitForDecision);
+	return startBrowserDecisionSession(server, ctx, server.waitForDecision, undefined, {
+		mode: "annotate",
+		project: annotateProject,
+		label: annotateLabel,
+	});
 }
 
 export async function openLastMessageAnnotation(
@@ -776,7 +967,8 @@ export async function openArchiveBrowserAction(
 		throw new Error("Plannotator archive browser is unavailable in this session.");
 	}
 
-	const server = await startServerWithSelfPreemption(() => startPlanReviewServer({
+	const project = detectProjectName();
+	const server = await startServerForBrowser(() => startPlanReviewServer({
 		plan: "",
 		htmlContent: planHtmlContent,
 		origin: "pi",
@@ -785,12 +977,16 @@ export async function openArchiveBrowserAction(
 		sharingEnabled: resolveSharingEnabled(loadConfig()),
 		shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
 		pasteApiUrl: process.env.PLANNOTATOR_PASTE_URL || undefined,
-	}));
+	}), ctx, `archive for ${project}`);
 
 	return openBrowserAndWait(server, ctx, async () => {
 		if (server.waitForDone) {
 			await server.waitForDone();
 		}
 		return { opened: true };
+	}, {
+		mode: "archive",
+		project,
+		label: `archive-${project}`,
 	});
 }
