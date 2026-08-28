@@ -22,6 +22,9 @@ export interface PdfAnnotationSidecarPaths {
   raw: string;
   hidden: string;
   global: string;
+  /** Course/source-package metadata stored beside source.pdf. */
+  sourceMetadata: string;
+  /** Legacy annotation metadata stored inside metadata/. */
   metadata: string;
   migrationReport: string;
 }
@@ -46,6 +49,7 @@ export function pdfAnnotationSidecarPaths(source: PdfSourceDescriptor): PdfAnnot
     raw: join(metadataDirectory, "annotations-raw.json"),
     hidden: join(metadataDirectory, "annotations-hidden.json"),
     global: join(metadataDirectory, "annotations-global.json"),
+    sourceMetadata: join(source.sourceDirectory, "metadata.json"),
     metadata: join(metadataDirectory, "metadata.json"),
     migrationReport: join(metadataDirectory, "migration-report.json"),
   };
@@ -58,6 +62,49 @@ function readJson<T>(path: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+const PDF_METADATA_TITLE_MAX_LENGTH = 600;
+const PDF_METADATA_AUTHOR_MAX_LENGTH = 200;
+const PDF_METADATA_AUTHOR_MAX_COUNT = 32;
+
+function cleanPdfMetadataText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned) return undefined;
+  return cleaned.slice(0, maxLength).trim();
+}
+
+function fallbackPdfDisplayName(source: PdfSourceDescriptor): string {
+  const fileStem = source.pdfName.replace(/\.pdf$/i, "");
+  const candidate = /^(source|ocr)$/i.test(fileStem)
+    ? basename(source.sourceDirectory).replace(/^week-\d+-/i, "")
+    : fileStem;
+  return candidate.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim() || source.pdfName;
+}
+
+function loadPdfSourceMetadata(source: PdfSourceDescriptor): {
+  displayName: string;
+  authors?: string[];
+} {
+  const metadata = readJson<Record<string, unknown>>(pdfAnnotationSidecarPaths(source).sourceMetadata, {});
+  const displayName = cleanPdfMetadataText(metadata.title, PDF_METADATA_TITLE_MAX_LENGTH)
+    ?? fallbackPdfDisplayName(source);
+  const authorValues = Array.isArray(metadata.authors)
+    ? metadata.authors
+    : typeof metadata.authors === "string"
+      ? metadata.authors.split(/\s*;\s*/)
+      : metadata.author === undefined
+        ? []
+        : [metadata.author];
+  const authors = [...new Set(authorValues
+    .map((value) => cleanPdfMetadataText(value, PDF_METADATA_AUTHOR_MAX_LENGTH))
+    .filter((value): value is string => value !== undefined))]
+    .slice(0, PDF_METADATA_AUTHOR_MAX_COUNT);
+  return {
+    displayName,
+    ...(authors.length > 0 ? { authors } : {}),
+  };
 }
 
 function asFiniteNumber(value: unknown, fallback = 0): number {
@@ -368,8 +415,9 @@ export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnot
   const hidden = new Set(hiddenValues.filter((value): value is string => typeof value === "string"));
   const raw = loadRawPdfAnnotations(source).filter((annotation) => !hidden.has(annotation.id));
   const seen = new Set(browser.map((annotation) => annotation.id));
+  const sourceMetadata = loadPdfSourceMetadata(source);
   return {
-    source: { fileName: source.pdfName },
+    source: { fileName: source.pdfName, ...sourceMetadata },
     annotations: sortPdfAnnotations([...browser, ...raw.filter((annotation) => !seen.has(annotation.id))]),
     globalComments: loadPdfGlobalComments(source),
     pageMapping: loadPageMapping(source),

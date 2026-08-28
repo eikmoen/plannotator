@@ -90,7 +90,10 @@ export interface PdfSourceDescriptor {
 export interface PdfAnnotationDocument {
   source: {
     fileName: string;
+    /** Human-readable document title, preferably from a sibling metadata.json. */
     displayName?: string;
+    /** Ordered author names from the same document metadata. */
+    authors?: string[];
   };
   annotations: PdfAnnotation[];
   /** Document-level notes with no page or text-selection anchor. */

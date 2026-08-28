@@ -42,6 +42,10 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Pi PDF annotate server",
     const bytes = Buffer.from("%PDF-1.4\nabcdefghij\n%%EOF\n");
     const pdfPath = join(directory, "source.pdf");
     const markdownPath = join(directory, "notes.md");
+    writeFileSync(join(directory, "metadata.json"), JSON.stringify({
+      title: "Pi PDF Paper",
+      authors: ["Ada Author", "Ben Researcher"],
+    }));
     writeFileSync(pdfPath, bytes);
     writeFileSync(markdownPath, "# Notes\n");
 
@@ -80,6 +84,11 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Pi PDF annotate server",
     const loaded = await fetch(`${server.url}/api/pdf/annotations`).then((response) => response.json());
     expect(loaded.annotations.map(({ id }: { id: string }) => id)).toEqual(["pi-one"]);
     expect(loaded.globalComments).toEqual([{ id: "global-one", text: "Whole-document note", author: "Eik" }]);
+    expect(loaded.source).toEqual({
+      fileName: "source.pdf",
+      displayName: "Pi PDF Paper",
+      authors: ["Ada Author", "Ben Researcher"],
+    });
 
     const tree = await fetch(`${server.url}/api/reference/files?dirPath=${encodeURIComponent(directory)}`).then((response) => response.json());
     expect(JSON.stringify(tree.tree)).toContain("source.pdf");

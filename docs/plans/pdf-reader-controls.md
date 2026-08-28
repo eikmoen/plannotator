@@ -6,6 +6,7 @@ Extend the native PDF annotation surface with reading controls while preserving 
 
 ## Scope
 
+- prominent document title and author context in the reader header;
 - page navigation and current-page indicator;
 - zoom out, zoom in, fit width, and reset;
 - document text search with result navigation;
@@ -30,6 +31,7 @@ Extend the native PDF annotation surface with reading controls while preserving 
 
 Implemented:
 
+- centered desktop header metadata from the source package's canonical `metadata.json`, with a filename-derived fallback and the paper title retained in compact layouts;
 - page input and previous/next controls;
 - zoom in/out, 100% reset, and fit-width controls;
 - bounded-concurrency full-document text index, result count/navigation, snippets, and visible-page hit marking;

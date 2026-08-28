@@ -4905,13 +4905,14 @@ const App: React.FC = () => {
   const handleSaveToBear = useCallback(() => headerHandlersRef.current.handleQuickSaveToNotes('bear'), []);
 
   const compactDocumentTitle = useMemo(() => {
+    if (isPdfSurface && pdfDocument?.source.displayName) return pdfDocument.source.displayName;
     const path = linkedDocHook.filepath ?? sourceFilePath ?? fileBrowser.activeFile;
     if (path) return path.replace(/\\/g, '/').split('/').pop() || path;
     if (archive.currentInfo?.title) return archive.currentInfo.title;
     if (annotateSource === 'message') return 'Message';
     if (annotateSource === 'folder') return 'Choose a file';
     return 'Plan';
-  }, [annotateSource, archive.currentInfo?.title, fileBrowser.activeFile, linkedDocHook.filepath, sourceFilePath]);
+  }, [annotateSource, archive.currentInfo?.title, fileBrowser.activeFile, isPdfSurface, linkedDocHook.filepath, pdfDocument?.source.displayName, sourceFilePath]);
 
   const callbackShareUrlReady = callbackConfig
     ? Boolean(shareUrl || shortShareUrl || (renderAs === 'html' && (shareHtml || rawHtml)))
@@ -5399,6 +5400,8 @@ const App: React.FC = () => {
           compactNavigatorOpen={isCompactNavigatorOpen}
           onCompactNavigatorToggle={() => toggleSidebarTab(effectiveCompactNavigatorTab)}
           compactDocumentTitle={compactDocumentTitle}
+          pdfDocumentTitle={isPdfSurface ? pdfDocument?.source.displayName : undefined}
+          pdfDocumentAuthors={isPdfSurface ? pdfDocument?.source.authors : undefined}
           compactSessionActions={compactSessionActions}
           compactDocumentActions={compactDocumentActions}
           isApiMode={isApiMode}

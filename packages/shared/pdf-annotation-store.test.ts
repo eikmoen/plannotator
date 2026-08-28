@@ -39,6 +39,10 @@ function fixture() {
   const pdfPath = join(directory, "source.pdf");
   const pdfBytes = Buffer.from("%PDF-1.4\nfixture\n%%EOF\n");
   writeFileSync(pdfPath, pdfBytes);
+  writeFileSync(join(directory, "metadata.json"), JSON.stringify({
+    title: "A Source-Checked Paper Title",
+    authors: ["Ada Author", "Ben Researcher"],
+  }));
   mkdirSync(join(directory, "metadata"));
   writeFileSync(join(directory, "metadata", "metadata.json"), JSON.stringify({ page_mapping: { mode: "offset", pdf_page_1_is: 35 } }));
   writeFileSync(join(directory, "metadata", "annotations.json"), JSON.stringify([annotation("browser", 2, "green")]));
@@ -62,6 +66,11 @@ describe("PDF annotation sidecar store", () => {
     expect(document.globalComments).toEqual([]);
     expect(document.pageMapping?.pdf_page_1_is).toBe(35);
     expect(document.labels.green).toBe("Thesis");
+    expect(document.source).toEqual({
+      fileName: "source.pdf",
+      displayName: "A Source-Checked Paper Title",
+      authors: ["Ada Author", "Ben Researcher"],
+    });
   });
 
   test("saves browser annotations atomically without changing PDF bytes or hand-written Markdown", () => {

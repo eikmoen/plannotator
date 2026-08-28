@@ -21,6 +21,10 @@ function pdfFixture() {
   const directory = mkdtempSync(join(tmpdir(), "plannotator-bun-pdf-"));
   directories.push(directory);
   mkdirSync(join(directory, "metadata"));
+  writeFileSync(join(directory, "metadata.json"), JSON.stringify({
+    title: "Bun PDF Paper",
+    authors: ["Ada Author", "Ben Researcher"],
+  }));
   const bytes = Buffer.from("%PDF-1.4\n0123456789\n%%EOF\n");
   const pdfPath = join(directory, "source.pdf");
   const markdownPath = join(directory, "notes.md");
@@ -84,6 +88,11 @@ describe.skipIf(Boolean(process.env.PLANNOTATOR_PORT))("Bun PDF annotate server"
     const loaded = await fetch(`${server.url}/api/pdf/annotations`).then((response) => response.json());
     expect(loaded.annotations.map(({ id }: { id: string }) => id)).toEqual(["one"]);
     expect(loaded.globalComments).toEqual([{ id: "global-one", text: "Whole-document note", author: "Eik" }]);
+    expect(loaded.source).toEqual({
+      fileName: "source.pdf",
+      displayName: "Bun PDF Paper",
+      authors: ["Ada Author", "Ben Researcher"],
+    });
     const annotationsMarkdown = readFileSync(join(fixture.directory, "annotations.md"), "utf8");
     expect(annotationsMarkdown).toContain("**global comment** — Whole-document note");
     expect(annotationsMarkdown).toContain("[[source.pdf#page=1");
