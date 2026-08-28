@@ -125,7 +125,7 @@ Even with opt-in, the Bun terminal bridge still uses the tokenized WebSocket pat
 
 ## Pi Runtime
 
-The Pi extension server runs on Node, so it does not need the Bun sidecar or managed compiled-binary runtime.
+The Pi extension server runs on Node, so it does not need the Bun sidecar or managed compiled-binary runtime. In a source checkout installed with Bun, `node-pty` still has to compile its Linux native addon because its npm package does not ship a Linux prebuild. The repository patch keeps `node-pty`'s normal prebuild check, then invokes the pinned `node-gyp@11.5.0` through npm when compilation is required; a clean or forced `bun install` must leave `node_modules/.bun/node-pty@*/node_modules/node-pty/build/Release/pty.node` loadable by Node.
 
 It mirrors the browser-facing contract:
 
