@@ -115,6 +115,20 @@ describe('getAgentTerminalLayout — invariants across the full option table', (
     }
   });
 
+  test('the collapsed navigator rail stays reachable beside a visible left terminal', () => {
+    for (const o of everyCase()) {
+      const l = getAgentTerminalLayout(o);
+      const terminalOccupiesLeftEdge = l.isVisible && l.placement === 'left';
+      if (terminalOccupiesLeftEdge) {
+        expect(l.collapsedSidebarTabsClassName, label(o)).toContain('relative');
+        expect(l.collapsedSidebarTabsClassName, label(o)).not.toContain('absolute');
+      } else {
+        expect(l.collapsedSidebarTabsClassName, label(o)).toContain('absolute');
+        expect(l.collapsedSidebarTabsClassName, label(o)).toContain('left-0');
+      }
+    }
+  });
+
   test('showControls=false renders nothing, whatever else is true', () => {
     for (const o of everyCase()) {
       const l = getAgentTerminalLayout({ ...o, showControls: false });

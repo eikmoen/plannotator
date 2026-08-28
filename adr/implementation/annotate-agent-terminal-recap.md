@@ -162,11 +162,14 @@ The panel includes:
 
 The redundant agent header was removed. When running, the first row is the agent name, cwd context, settings, and stop action.
 
+When the terminal is docked left and the document navigator is collapsed, the narrow Contents/Files rail stays in normal layout flow between the terminal and document. This keeps the file browser reachable; opening it places the full navigator beside the still-running terminal.
+
 The terminal intentionally has no rounded card frame or extra padding around xterm. The xterm scrollbar gap is hidden so the terminal fills the panel cleanly.
 
 Important files:
 
 - `packages/editor/App.tsx`
+- `packages/editor/agentTerminalLayout.ts`
 - `packages/editor/components/AnnotateAgentTerminalPanel.tsx`
 - `packages/editor/components/annotateAgentTerminalTheme.ts`
 - `packages/editor/index.css`

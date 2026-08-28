@@ -782,6 +782,7 @@ const App: React.FC = () => {
     showOnRight: showAgentTerminalOnRight,
     isRightPanelVisible,
     dockClassName: agentTerminalDockClassName,
+    collapsedSidebarTabsClassName,
     placement: agentTerminalPlacement,
   } = getAgentTerminalLayout({
     showControls: showAgentTerminalControls,
@@ -5592,7 +5593,7 @@ const App: React.FC = () => {
           {taterMode && <TaterSpriteRunning />}
           {showAgentTerminalOnLeft && agentTerminalPanel}
           {/* Left Sidebar: collapsed tab flags (when sidebar is closed) */}
-          {!isCompactTouchLayout && wideModeType === null && !sidebar.isOpen && !goalSetupMode && !isLeftAgentTerminalVisible && !(isHtmlSurface && htmlToolsHidden) && (
+          {!isCompactTouchLayout && wideModeType === null && !sidebar.isOpen && !goalSetupMode && !(isHtmlSurface && htmlToolsHidden) && (
             <SidebarTabs
               activeTab={sidebar.activeTab}
               onToggleTab={toggleSidebarTab}
@@ -5606,7 +5607,7 @@ const App: React.FC = () => {
               onToggleAgentTerminal={toggleAgentTerminal}
               hasMessageAnnotations={activeMessageAnnotationCounts.size > 0}
               hasFileAnnotations={hasFileAnnotations}
-              className="hidden lg:flex absolute left-0 top-0 z-20"
+              className={collapsedSidebarTabsClassName}
             />
           )}
 
