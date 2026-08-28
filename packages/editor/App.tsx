@@ -1,3 +1,14 @@
+// Eager renderer registration (side-effect imports, evaluated before every
+// other module below). These keep Plannotator's first paint, identity minting
+// and failure surface byte-identical now that @plannotator/ui loads KaTeX, the
+// username dictionary and the Mermaid runtime lazily for hosts: math is typeset
+// on the first commit, names come from the full dictionary, and Mermaid stays
+// in this app's entry chunk (the review editor never renders Mermaid and does
+// not import that entry). Guarded by tests/entry-assets.test.ts; do not drop
+// or reorder any of these lines.
+import '@plannotator/ui/utils/math-eager';
+import '@plannotator/ui/utils/identity-tater';
+import '@plannotator/ui/utils/mermaid-eager';
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { toast, Toaster } from 'sonner';
 import { type Origin, getAgentName } from '@plannotator/shared/agents';
@@ -143,6 +154,10 @@ import {
   usePlanDiffViewAutoExit,
 } from './hooks/usePlanDiffViewAutoExit';
 import { AppHeader } from './components/AppHeader';
+import { useHtmlRefresh, type HtmlRefreshedDocument } from './hooks/useHtmlRefresh';
+import { AgentNudgeBanner } from './components/AgentNudgeBanner';
+import { useDocumentWebMcp } from './webmcp/useDocumentWebMcp';
+import { useWebMcpActivity } from '@plannotator/ui/webmcp';
 import type { CompactPlanAction } from '@plannotator/ui/components/PlanHeaderMenu';
 import { FolderAnnotationEmptyState } from './components/FolderAnnotationEmptyState';
 import { CompactAnnotationControls } from './components/CompactAnnotationControls';
@@ -1240,6 +1255,7 @@ const App: React.FC = () => {
   const activeDiffPreviousPlan = linkedDocHook.isActive ? linkedDocHook.diffPreviousPlan : previousPlan;
   const activeDiffVersionInfo = linkedDocHook.isActive ? linkedDocHook.diffVersionInfo : versionInfo;
   const activeDocFilepath = linkedDocHook.isActive ? linkedDocHook.filepath : null;
+  const activeHtmlPath = linkedDocHook.filepath ?? sourceFilePath ?? null;
 
   // Per-document version fetchers: only needed while a document with its own
   // diff baseline is active (folder annotate) — usePlanDiff's bare-endpoint
@@ -1343,6 +1359,45 @@ const App: React.FC = () => {
     setMarkdown, setAnnotations, setSelectedAnnotationId, setSubmitted,
   });
   const documentReadOnly = archive.archiveMode;
+  // A Refresh lands the bytes and, for the root document, the version diff
+  // the server recomputed against them (previousPlan/versionInfo still name
+  // the saved baseline). The view returns to normal mode with the "Show
+  // changes" toggle available whenever a diff came back; a refresh of a
+  // linked doc keeps the root's version fields untouched, as before.
+  const applyRefreshedHtml = useCallback((refreshed: HtmlRefreshedDocument) => {
+    setRawHtml(refreshed.rawHtml);
+    setShareHtml('');
+    setIsPlanDiffActive(false);
+    if (linkedDocHook.isActive) {
+      setHtmlDiffHtml(null);
+      return;
+    }
+    setHtmlDiffHtml(refreshed.diffHtml ?? null);
+    setPreviousPlan(refreshed.previousPlan ?? null);
+    setVersionInfo(refreshed.versionInfo ?? null);
+  }, [linkedDocHook.isActive]);
+  // Annotations a Refresh could no longer anchor: the panel shows an
+  // "Unanchored" chip on them. Set from the refresh's restore report only,
+  // so the chip is exactly the toast's list; a document change clears it.
+  const [htmlUnanchoredIds, setHtmlUnanchoredIds] = useState<ReadonlySet<string>>(() => new Set());
+  const handleHtmlRefreshUnanchored = useCallback((ids: string[]) => {
+    setHtmlUnanchoredIds(new Set(ids));
+  }, []);
+  useEffect(() => {
+    setHtmlUnanchoredIds((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [activeHtmlPath]);
+  const htmlRefresh = useHtmlRefresh({
+    enabled: isApiMode && annotateMode && isHtmlSurface && !liveApp && !documentReadOnly,
+    activePath: activeHtmlPath,
+    onSnapshot: applyRefreshedHtml,
+    onUnanchored: handleHtmlRefreshUnanchored,
+  });
+  const htmlShareContext = useMemo(
+    () => ({ activePath: activeHtmlPath, reloadGeneration: htmlRefresh.reloadGeneration }),
+    [activeHtmlPath, htmlRefresh.reloadGeneration],
+  );
+  const latestHtmlShareContextRef = useRef(htmlShareContext);
+  latestHtmlShareContextRef.current = htmlShareContext;
 
   const canUseWideMode = useMemo(() => canUseAnnotateWideMode({
     archiveMode: archive.archiveMode,
@@ -2002,7 +2057,7 @@ const App: React.FC = () => {
     if (!isApiMode) return rawHtml;
 
     const params = new URLSearchParams();
-    const activePath = linkedDocHook.filepath ?? sourceFilePath;
+    const { activePath } = htmlShareContext;
     if (activePath) params.set('path', activePath);
     const query = params.toString();
     const res = await fetch(`/api/share-html${query ? `?${query}` : ''}`);
@@ -2010,9 +2065,12 @@ const App: React.FC = () => {
     if (!res.ok || data.error || typeof data.shareHtml !== 'string') {
       throw new Error(data.error || 'Failed to prepare HTML for sharing');
     }
+    if (latestHtmlShareContextRef.current !== htmlShareContext) {
+      throw new Error('HTML changed while preparing the share link');
+    }
     setShareHtml(data.shareHtml);
     return data.shareHtml;
-  }, [isApiMode, linkedDocHook.filepath, rawHtml, renderAs, shareHtml, sourceFilePath]);
+  }, [htmlShareContext, isApiMode, rawHtml, renderAs, shareHtml]);
 
   // URL-based sharing
   const {
@@ -2048,6 +2106,7 @@ const App: React.FC = () => {
     setRawHtml,
     setShareHtml,
     setRenderAs,
+    htmlRefresh.reloadGeneration,
   );
 
   useEffect(() => {
@@ -4039,6 +4098,56 @@ const App: React.FC = () => {
     ));
   };
 
+  // WebMCP (browser-agent tools). The hook detects `document.modelContext`
+  // once and does nothing in a browser without it; the banner state below
+  // is only ever set by the agent's `nudge_user` tool.
+  const [agentNudge, setAgentNudge] = useState<{ key: number; message: string } | null>(null);
+  const showAgentNudge = useCallback((message: string) => {
+    setAgentNudge({ key: Date.now(), message });
+  }, []);
+  const webmcpActivity = useWebMcpActivity();
+  const webmcp = useDocumentWebMcp({
+    isApiMode,
+    isSharedSession,
+    goalSetupMode,
+    annotateMode,
+    annotateSource,
+    liveApp,
+    livePageUrl,
+    archiveMode: archive.archiveMode,
+    gate,
+    submitted,
+    renderAs,
+    rawHtml,
+    displayedMarkdown,
+    blocks,
+    allAnnotations,
+    isEditingMarkdown,
+    editorDiffersFromBaseline,
+    sourceStale: !!activeEditableDocument?.missingOnDisk || !!activeEditableDocument?.diskConflict,
+    sourceFilePath,
+    sourceInfo,
+    versionInfo,
+    linkedDoc: {
+      isActive: linkedDocHook.isActive,
+      filepath: linkedDocHook.filepath,
+      error: linkedDocHook.error,
+      getDocAnnotations: linkedDocHook.getDocAnnotations,
+      open: (path: string) => linkedDocHook.open(path),
+    },
+    fileBrowserDirs: fileBrowser.dirs,
+    fileBrowserActiveFile: fileBrowser.activeFile,
+    openFolderFile: handleFileBrowserSelect,
+    viewerRef,
+    scrollViewport,
+    addAnnotation: handleAddAnnotation,
+    editAnnotation: handleEditAnnotation,
+    deleteAnnotation: handleDeleteAnnotation,
+    selectAnnotation: handleSelectAnnotation,
+    showBanner: showAgentNudge,
+  });
+  const agentHasComments = allAnnotations.some((a) => a.source === 'browser-agent');
+
   const handleIdentityChange = useCallback((oldIdentity: string, newIdentity: string) => {
     if (documentReadOnly) return;
     setAnnotations(prev => prev.map(ann =>
@@ -4982,6 +5091,19 @@ const App: React.FC = () => {
               onSelect: () => setHtmlToolsHidden((v) => !v),
             }]
           : []),
+        // The desktop header's Refresh is header-only too; local HTML files
+        // (never URL or live-app sessions) get the same action here.
+        ...(isHtmlSurface && htmlRefresh.canRefresh
+          ? [{
+              id: 'refresh' as const,
+              label: 'Refresh from disk',
+              subtitle: htmlRefresh.isRefreshing
+                ? 'Refreshing the HTML file'
+                : 'Reload the HTML file and keep the annotations that still match',
+              onSelect: () => { void htmlRefresh.refresh(); },
+              disabled: htmlRefresh.isRefreshing,
+            }]
+          : []),
       ];
 
   const planMaxWidth = useMemo(() => {
@@ -5193,6 +5315,7 @@ const App: React.FC = () => {
       width={presentation === 'panel' ? `var(--rpanel-w, ${panelResize.width}px)` : undefined}
       editorAnnotations={isPdfSurface ? undefined : editorAnnotations}
       onDeleteEditorAnnotation={isPdfSurface ? undefined : deleteEditorAnnotation}
+      unanchoredIds={!isPdfSurface && isHtmlSurface && htmlUnanchoredIds.size > 0 ? htmlUnanchoredIds : undefined}
       onClose={presentation === 'panel' ? () => setIsPanelOpen(false) : closeCompactPlanSurface}
       onQuickCopy={isPdfSurface ? undefined : async () => {
         const output = getCurrentFeedbackPayload();
@@ -5268,6 +5391,9 @@ const App: React.FC = () => {
           onToggleHtmlAnnotate={isHtmlSurface && !documentReadOnly ? handleHtmlAnnotateToggle : undefined}
           htmlToolsHidden={htmlToolsHidden}
           onToggleHtmlTools={isHtmlSurface ? () => setHtmlToolsHidden((v) => !v) : undefined}
+          canRefreshHtml={htmlRefresh.canRefresh}
+          isRefreshingHtml={htmlRefresh.isRefreshing}
+          onRefreshHtml={htmlRefresh.refresh}
           compactTouchLayout={isCompactTouchLayout}
           compactNavigatorAvailable={compactNavigatorAvailable}
           compactNavigatorOpen={isCompactNavigatorOpen}
@@ -5306,6 +5432,8 @@ const App: React.FC = () => {
           mobileSettingsOpen={mobileSettingsOpen}
           gitUser={gitUser}
           agentTerminalAvailable={showAgentTerminalControls}
+          webmcpAvailable={webmcp.available}
+          agentConnected={webmcpActivity.calls > 0}
           onCallbackFeedback={handleCallbackFeedback}
           onCallbackApprove={handleCallbackApprove}
           onAnnotateExit={handleHeaderAnnotateExit}
@@ -5831,7 +5959,7 @@ const App: React.FC = () => {
                   </div>
                 ) : renderAs === 'html' ? (
                   <HtmlViewer
-                    key={(liveApp ? 'live-app' : linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan') + (isPlanDiffActive && htmlDiffHtml ? ':diff' : '')}
+                    key={`${liveApp ? 'live-app' : linkedDocHook.isActive ? `doc:${linkedDocHook.filepath}` : 'plan'}${isPlanDiffActive && htmlDiffHtml ? ':diff' : ''}:reload-${htmlRefresh.reloadGeneration}`}
                     ref={viewerRef}
                     rawHtml={isPlanDiffActive && htmlDiffHtml ? htmlDiffHtml : rawHtml}
                     src={liveApp?.appUrl}
@@ -5869,6 +5997,7 @@ const App: React.FC = () => {
                     diffActive={!liveApp && isPlanDiffActive && !!htmlDiffHtml}
                     onToggleDiff={() => setIsPlanDiffActive((v) => !v)}
                     onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
+                    onUnanchoredChange={htmlRefresh.reportAnnotationRestore}
                     readOnly={documentReadOnly}
                   />
                 ) : isEditingMarkdown ? (
@@ -6225,6 +6354,17 @@ const App: React.FC = () => {
             } as React.CSSProperties,
           }}
         />
+
+        {/* Browser-agent nudge (WebMCP nudge_user): one transient banner,
+            rendered only while a message exists. */}
+        {agentNudge && (
+          <AgentNudgeBanner
+            key={agentNudge.key}
+            message={agentNudge.message}
+            onDismiss={() => setAgentNudge(null)}
+            onShowComments={agentHasComments && !isPanelOpen ? () => { setIsPanelOpen(true); setAgentNudge(null); } : undefined}
+          />
+        )}
 
         {/* Completion overlay - shown after approve/deny */}
         <CompletionOverlay

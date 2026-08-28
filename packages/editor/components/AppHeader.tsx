@@ -10,6 +10,14 @@ import type { CallbackConfig } from '@plannotator/ui/utils/callback';
 import type { UIPreferences } from '@plannotator/ui/utils/uiPreferences';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import type { CompactPlanAction } from '@plannotator/ui/components/PlanHeaderMenu';
+import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
+
+/** Plannotator's refresh strings for the published control: the document
+ * is a file on disk, so the refresh says so. */
+export const PLANNOTATOR_HTML_REFRESH_LABELS = {
+  refreshTitle: 'Refresh HTML from disk',
+  refreshingTitle: 'Refreshing HTML from disk',
+} as const;
 
 interface AppHeaderProps {
   /** Mobile document-scroll surfaces let Safari own the top edge and scroll
@@ -26,6 +34,9 @@ interface AppHeaderProps {
    *  fully removed from the DOM while hidden; this button is the way back. */
   htmlToolsHidden?: boolean;
   onToggleHtmlTools?: () => void;
+  canRefreshHtml?: boolean;
+  isRefreshingHtml?: boolean;
+  onRefreshHtml?: () => void;
   /** Compact touch layouts replace the brand mark with a task-focused entry
    * into the full-stage document navigator. Desktop never receives it. */
   compactTouchLayout?: boolean;
@@ -74,6 +85,12 @@ interface AppHeaderProps {
   gitUser: string | undefined;
   /** This session offers the Agent TUI, so Settings shows its Position row. */
   agentTerminalAvailable: boolean;
+  /** The browser exposes WebMCP, so Settings shows the "Agent tools" opt-out.
+   *  Nothing in the header renders for this alone. */
+  webmcpAvailable?: boolean;
+  /** A browser agent has completed at least one tool call in this session.
+   *  Only then does the unobtrusive "Agent" indicator appear. */
+  agentConnected?: boolean;
 
   // Handlers — App owns all decision logic, header just calls these
   onCallbackFeedback: () => void;
@@ -121,6 +138,9 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onToggleHtmlAnnotate,
   htmlToolsHidden,
   onToggleHtmlTools,
+  canRefreshHtml,
+  isRefreshingHtml,
+  onRefreshHtml,
   compactTouchLayout = false,
   compactNavigatorAvailable = false,
   compactNavigatorOpen = false,
@@ -159,6 +179,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   mobileSettingsOpen,
   gitUser,
   agentTerminalAvailable,
+  webmcpAvailable = false,
+  agentConnected = false,
   onCallbackFeedback,
   onCallbackApprove,
   onAnnotateExit,
@@ -350,58 +372,39 @@ export const AppHeader = React.memo<AppHeaderProps>(({
           </>
         )}
 
-        {/* Interact/Annotate toggle — HTML and live-app surfaces only. A PEN
-            icon (deliberately not a speech bubble: the annotations-panel
-            button beside it is already a bubble, and the two must be
-            distinguishable at a glance — also distinct from the AI sparkles).
-            Always the same icon: armed shows the accent color plus a visible
-            border; unarmed is muted with a TRANSPARENT border of the same
-            width, so the button's box is pixel-identical in both states. */}
-        {/* Show/hide tools — removes ALL floating chrome (sidebar tongue tabs +
-            the comment/attachments cluster) from the DOM, leaving nothing over
-            the page. Sits left of the pen; this button is the only way back,
-            so it never hides itself. Eye = tools visible, eye-off = hidden. */}
-        {!compactTouchLayout && htmlSurface && onToggleHtmlTools && (
-          <button
-            type="button"
-            data-html-tools-toggle
-            onClick={onToggleHtmlTools}
-            aria-pressed={!!htmlToolsHidden}
-            className="p-1.5 rounded-md border border-transparent text-xs font-medium transition-all cursor-pointer text-muted-foreground hover:text-foreground hover:bg-muted"
-            title={htmlToolsHidden ? 'Show tools' : 'Hide tools'}
-          >
-            {htmlToolsHidden ? (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            )}
-          </button>
+        {/* HTML and live-app surfaces only: the eye (show/hide tools, the
+            only way back from hidden), the refresh, and the Interact/Annotate
+            pen, in that order. The published control carries the markup;
+            the compact touch shell offers the same three actions in its
+            Options menu instead (compactDocumentActions in App: Show/Hide
+            tools, Interact/Annotate, Refresh from disk). */}
+        {htmlSurface && (onToggleHtmlTools || onToggleHtmlAnnotate) && (
+          <HtmlSurfaceControls
+            compact={compactTouchLayout}
+            armed={!!htmlAnnotateArmed}
+            onToggleArmed={onToggleHtmlAnnotate}
+            toolsHidden={!!htmlToolsHidden}
+            onToggleTools={onToggleHtmlTools}
+            canRefresh={!!canRefreshHtml && !!onRefreshHtml}
+            onRefresh={() => onRefreshHtml?.()}
+            isRefreshing={!!isRefreshingHtml}
+            labels={PLANNOTATOR_HTML_REFRESH_LABELS}
+          />
         )}
 
-        {!compactTouchLayout && htmlSurface && onToggleHtmlAnnotate && (
-          <button
-            type="button"
-            data-html-annotate-toggle
-            onClick={onToggleHtmlAnnotate}
-            aria-pressed={!!htmlAnnotateArmed}
-            className={`p-1.5 rounded-md border text-xs font-medium transition-all cursor-pointer ${
-              htmlAnnotateArmed
-                ? 'border-primary/60 bg-primary/15 text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-            title={htmlAnnotateArmed
-              ? 'Annotate mode: click an element or select text to comment. Esc to interact'
-              : 'Interact mode: clicks reach the page (text selection still comments). Click to annotate'}
+        {/* WebMCP activity indicator. Deliberately absent until a browser
+            agent has completed a tool call: the API merely existing must not
+            change the page (maintainer ruling). Non-interactive; the opt-out
+            lives in Settings. */}
+        {!compactTouchLayout && agentConnected && (
+          <span
+            data-webmcp-indicator="true"
+            className="hidden md:inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+            title="A browser agent has used Plannotator's tools in this session. Its comments are marked browser-agent. Turn the tools off in Settings."
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.862 4.487zm0 0L19.5 7.125" />
-            </svg>
-          </button>
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+            Agent
+          </span>
         )}
 
         {/* Annotations panel toggle */}
@@ -456,6 +459,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             onExternalClose={onCloseSettings}
             gitUser={gitUser}
             agentTerminalAvailable={agentTerminalAvailable}
+            webmcpAvailable={webmcpAvailable}
           />
         </div>
 

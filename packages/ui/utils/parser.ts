@@ -1,5 +1,6 @@
 import type { Block, Annotation, CodeAnnotation, EditorAnnotation, ImageAttachment } from '../types';
 import { planDenyFeedback } from '@plannotator/core/feedback-templates';
+import { resolveReplyParents } from '@plannotator/core/annotation-threads';
 import { skillReferenceExportBlock } from './skillReferences';
 
 /**
@@ -1208,6 +1209,64 @@ export const exportAnnotations = (
     ];
   }
 
+  // Threaded replies (`inReplyTo`): a reply is emitted as a nested exchange
+  // under its parent's entry rather than as its own numbered entry, so the
+  // coding agent reads the conversation in order. The threading rule is the
+  // shared one (resolveReplyParents): a reply whose parent is not in the
+  // export, a self-reference, and every member of an inReplyTo cycle render
+  // as ordinary entries in original order, so no annotation is ever dropped
+  // and the header count always equals what is emitted. With no `inReplyTo`
+  // anywhere the output is byte-identical to the ungrouped export.
+  const replyParents = resolveReplyParents(sortedAnns as any[]);
+  const isReply = (a: any) => replyParents.get(a.id) != null;
+  const hasReplies = sortedAnns.some(isReply);
+  // Children are grouped once (creation order within a parent); the old
+  // per-level re-filter and re-sort of the whole list made a long thread
+  // quadratic in both time and output size.
+  const repliesByParent = new Map<string, any[]>();
+  if (hasReplies) {
+    for (const a of sortedAnns as any[]) {
+      const parent = replyParents.get(a.id);
+      if (!parent) continue;
+      const list = repliesByParent.get(parent) ?? [];
+      list.push(a);
+      repliesByParent.set(parent, list);
+    }
+    for (const list of repliesByParent.values()) list.sort((a: any, b: any) => a.createdA - b.createdA);
+    emitOrder = emitOrder.filter((a) => !isReply(a));
+    // Numbers stay consecutive over the entries that are actually emitted.
+    annotationNumbers.clear();
+    emitOrder.forEach((ann, index) => annotationNumbers.set(ann, index + 1));
+  }
+  // Nesting indent is capped so the export stays linear in the thread size
+  // (an uncapped indent on a 5,000-deep chain is 25 MB of whitespace) and
+  // the emission is an explicit stack rather than recursion, so a deep chain
+  // costs neither stack frames nor repeated string copies.
+  const MAX_REPLY_INDENT_DEPTH = 8;
+  const replyBlock = (parent: any): string => {
+    const parts: string[] = [];
+    const stack: Array<{ reply: any; depth: number }> = [];
+    const pushReplies = (of: any, depth: number) => {
+      const replies = repliesByParent.get(of.id);
+      if (!replies) return;
+      for (let i = replies.length - 1; i >= 0; i--) stack.push({ reply: replies[i], depth });
+    };
+    pushReplies(parent, 0);
+    while (stack.length > 0) {
+      const { reply, depth } = stack.pop()!;
+      const who = reply.author ? `${reply.author}` : 'reply';
+      const indent = '  '.repeat(Math.min(depth, MAX_REPLY_INDENT_DEPTH));
+      parts.push(`${indent}- **Reply (${who}):** ${String(reply.text ?? '').replace(/\r?\n/g, `\n${indent}  `)}\n`);
+      if (reply.images && reply.images.length > 0) {
+        reply.images.forEach((img: ImageAttachment) => {
+          parts.push(`${indent}  - [${img.name}] \`${img.path}\`\n`);
+        });
+      }
+      pushReplies(reply, depth + 1);
+    }
+    return parts.join('');
+  };
+
   let lastEmittedPage: string | null = null;
   emitOrder.forEach((ann) => {
     if (hasPageGroups && ann.pageUrl && ann.pageUrl !== lastEmittedPage) {
@@ -1266,6 +1325,12 @@ export const exportAnnotations = (
       ann.images.forEach((img: ImageAttachment) => {
         output += `- [${img.name}] \`${img.path}\`\n`;
       });
+    }
+
+    // Threaded replies nest under the entry they answer.
+    if (hasReplies) {
+      const thread = replyBlock(ann);
+      if (thread) output += `**Replies:**\n${thread}`;
     }
 
     output += '\n';

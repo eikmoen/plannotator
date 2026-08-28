@@ -163,8 +163,8 @@ function PdfSelectionComposer({
           })}
           quickLabels={quickLabels}
           showQuickApprove={false}
+          hideDelete
           copyText={highlight.content.text}
-          commentOnly
         />
       ) : null}
       {anchorEl && mode === "comment" ? (

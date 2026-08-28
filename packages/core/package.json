@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/core",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "type": "module",
   "exports": {
     "./agents": "./agents.ts",
@@ -9,6 +9,7 @@
     "./guide": "./guide.ts",
     "./guide-format": "./guide-format.ts",
     "./annotatable": "./annotatable.ts",
+    "./annotation-threads": "./annotation-threads.ts",
     "./agent-jobs": "./agent-jobs.ts",
     "./agent-terminal": "./agent-terminal.ts",
     "./browser-paths": "./browser-paths.ts",
@@ -21,6 +22,7 @@
     "./favicon": "./favicon.ts",
     "./feedback-templates": "./feedback-templates.ts",
     "./goal-setup": "./goal-setup.ts",
+    "./html-anchor": "./html-anchor.ts",
     "./open-in-apps": "./open-in-apps.ts",
     "./pdf-annotations": "./pdf-annotations.ts",
     "./project": "./project.ts",

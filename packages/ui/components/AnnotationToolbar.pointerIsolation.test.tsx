@@ -58,7 +58,7 @@ describe.if(hasDom)('AnnotationToolbar pointer isolation', () => {
               onQuickLabel={(label) => { selected = label; }}
               quickLabels={labels}
               showQuickApprove={false}
-              commentOnly
+              hideDelete
             />
           ) : null}
         </div>
