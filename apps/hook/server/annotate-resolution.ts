@@ -22,8 +22,8 @@ import { loadConfig, resolveUseJina } from "@plannotator/shared/config";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
 import { FILE_BROWSER_EXCLUDED } from "@plannotator/shared/reference-common";
 import {
-  buildAnnotatableDocRegex,
-  buildAnnotatableExtensionsHint,
+  buildAnnotatableTargetExtensionsHint,
+  buildAnnotatableTargetRegex,
 } from "@plannotator/shared/annotatable";
 import {
   getExtraMarkdownExtensions,
@@ -57,6 +57,8 @@ export interface AnnotateResolutionSuccess {
   /** Loopback HTML target resolved as a LIVE app session (server mode
    *  "annotate-app"): the URL is proxied, not converted. */
   liveApp?: boolean;
+  /** Binary PDF surface. Its bytes never enter the markdown/history path. */
+  renderAs?: "pdf";
 }
 
 export interface AnnotateResolutionFailure {
@@ -219,12 +221,12 @@ export async function resolveAnnotateTarget(options: {
 
   if (folderCandidate !== null) {
     const resolvedArg = resolveUserPath(folderCandidate, projectRoot);
-    // Folder annotation mode (markdown/plain text/config + HTML files)
-    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex(extraMarkdownExtensions))) {
+    // Folder annotation mode (markdown/plain text/config, HTML, and PDF files)
+    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableTargetRegex(extraMarkdownExtensions))) {
       return {
         ok: false,
         notFound: false,
-        message: `No annotatable files (markdown, plain-text, config, or HTML) found in ${resolvedArg}`,
+        message: `No annotatable files (markdown, plain-text, config, HTML, or PDF) found in ${resolvedArg}`,
       };
     }
     log(`Folder: ${resolvedArg}`);
@@ -236,6 +238,27 @@ export async function resolveAnnotateTarget(options: {
       annotateMode: "annotate-folder",
       sourceConverted: false,
       isUrl,
+    };
+  }
+
+  // Binary PDF check. Keep this before the UTF-8 document resolver so PDF
+  // bytes never flow through Bun.file(...).text() or the 2 MB text cap.
+  const pdfCandidate = resolveAtReference(rawFilePath, (candidate) => {
+    const absolute = resolveUserPath(candidate, projectRoot);
+    return /\.pdf$/i.test(absolute) && existsSync(absolute) && statSync(absolute).isFile();
+  });
+  if (pdfCandidate !== null) {
+    const resolvedArg = resolveUserPath(pdfCandidate, projectRoot);
+    log(`PDF: ${resolvedArg}`);
+    return {
+      ok: true,
+      markdown: "",
+      absolutePath: resolvedArg,
+      annotateMode: "annotate",
+      sourceInfo: path.basename(resolvedArg),
+      sourceConverted: false,
+      isUrl,
+      renderAs: "pdf",
     };
   }
 
@@ -302,7 +325,7 @@ export async function resolveAnnotateTarget(options: {
         notFound: false,
         message:
           `File type not supported: ${ext}\n` +
-          `Supported types: ${buildAnnotatableExtensionsHint(extraMarkdownExtensions)}\n` +
+          `Supported types: ${buildAnnotatableTargetExtensionsHint(extraMarkdownExtensions)}\n` +
           `For code review, use: plannotator review [file]`,
       };
     }

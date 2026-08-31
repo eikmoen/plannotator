@@ -24,8 +24,11 @@
 import {
 	buildAnnotatableDocRegex,
 	buildAnnotatableExtensionsHint,
+	buildAnnotatableTargetExtensionsHint,
+	buildAnnotatableTargetRegex,
 	buildAnnotatableTextRegex,
 	isAnnotatableDocPath as isAnnotatableDocPathWith,
+	isAnnotatableTargetPath as isAnnotatableTargetPathWith,
 	isAnnotatableTextPath as isAnnotatableTextPathWith,
 	normalizeMarkdownExtensions,
 	shouldStripFrontmatter as shouldStripFrontmatterWith,
@@ -71,9 +74,19 @@ export function getAnnotatableDocRegex(): RegExp {
 	return buildAnnotatableDocRegex(getExtraMarkdownExtensions());
 }
 
-/** Accepted-set hint for error messages, including the configured extras. */
+/** Plain-text + HTML + binary PDF matcher including configured extras. */
+export function getAnnotatableTargetRegex(): RegExp {
+	return buildAnnotatableTargetRegex(getExtraMarkdownExtensions());
+}
+
+/** Accepted document-set hint for error messages, including configured extras. */
 export function getAnnotatableExtensionsHint(): string {
 	return buildAnnotatableExtensionsHint(getExtraMarkdownExtensions());
+}
+
+/** Accepted target-set hint including the binary PDF surface. */
+export function getAnnotatableTargetExtensionsHint(): string {
+	return buildAnnotatableTargetExtensionsHint(getExtraMarkdownExtensions());
 }
 
 /**
@@ -85,9 +98,14 @@ export function isAnnotatableTextPath(input: string): boolean {
 	return isAnnotatableTextPathWith(input, getExtraMarkdownExtensions());
 }
 
-/** True when annotate can open `input` at all, honoring the configured extras. */
+/** True when annotate can open `input` as a UTF-8 document, honoring configured extras. */
 export function isAnnotatableDocPath(input: string): boolean {
 	return isAnnotatableDocPathWith(input, getExtraMarkdownExtensions());
+}
+
+/** True for every direct/folder target, including binary PDF. */
+export function isAnnotatableTargetPath(input: string): boolean {
+	return isAnnotatableTargetPathWith(input, getExtraMarkdownExtensions());
 }
 
 /** Frontmatter stripping decision honoring the configured extras (extras are markdown). */

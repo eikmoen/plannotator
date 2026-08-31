@@ -74,6 +74,51 @@ const headerProps: React.ComponentProps<typeof AppHeader> = {
   octarineConfigured: false,
 };
 
+describe.skipIf(!hasDom)('PDF document metadata', () => {
+  test('renders the paper title and ordered authors front and centre on desktop', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = domClient!.createRoot(host);
+    await act!(async () => {
+      root.render(
+        <ThemeProvider defaultTheme="dark">
+          <AppHeader
+            {...headerProps}
+            pdfDocumentTitle="Business Intelligence and Analytics: From Big Data to Big Impact"
+            pdfDocumentAuthors={["Hsinchun Chen", "Roger H. L. Chiang", "Veda C. Storey"]}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const metadata = host.querySelector<HTMLElement>('[data-pn-pdf-document-metadata]')!;
+    expect(metadata).not.toBeNull();
+    expect(host.querySelector('[data-pn-pdf-document-title]')?.textContent).toBe('Business Intelligence and Analytics: From Big Data to Big Impact');
+    expect(host.querySelector('[data-pn-pdf-document-authors]')?.textContent).toBe('Hsinchun Chen · Roger H. L. Chiang · Veda C. Storey');
+    expect(metadata.className).toContain('left-1/2');
+    expect(metadata.className).toContain('text-center');
+    await act!(async () => root.unmount());
+    host.remove();
+  });
+
+  test('does not add the metadata header outside a PDF document', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = domClient!.createRoot(host);
+    await act!(async () => {
+      root.render(
+        <ThemeProvider defaultTheme="dark">
+          <AppHeader {...headerProps} />
+        </ThemeProvider>,
+      );
+    });
+
+    expect(host.querySelector('[data-pn-pdf-document-metadata]')).toBeNull();
+    await act!(async () => root.unmount());
+    host.remove();
+  });
+});
+
 describe('compact Plan navigator trigger', () => {
   test('is a touch-safe disclosure with a stable focus-restoration target', () => {
     const html = renderToStaticMarkup(

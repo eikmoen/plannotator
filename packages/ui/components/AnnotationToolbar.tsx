@@ -25,6 +25,12 @@ interface AnnotationToolbarProps {
   onRequestComment?: (initialChar?: string) => void;
   /** Called when a quick label chip is selected */
   onQuickLabel?: (label: QuickLabel) => void;
+  /** Optional labels owned by the active document adapter. */
+  quickLabels?: QuickLabel[];
+  /** Keep the incumbent one-click Looks good action unless a surface opts out. */
+  showQuickApprove?: boolean;
+  /** Hide deletion without changing quick-label behavior (used by PDF selections). */
+  hideDelete?: boolean;
   /** Text to copy when the button is clicked */
   copyText?: string;
   /** Comment-only surfaces (HTML / live-app viewer): hide the Delete action,
@@ -51,6 +57,9 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   onClose,
   onRequestComment,
   onQuickLabel,
+  quickLabels: suppliedQuickLabels,
+  showQuickApprove = true,
+  hideDelete = false,
   copyText,
   commentOnly = false,
   hideCopyButton = false,
@@ -64,7 +73,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   const [showQuickLabels, setShowQuickLabels] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const zapButtonRef = useRef<HTMLButtonElement>(null);
-  const quickLabels = useMemo(() => getQuickLabels(), []);
+  const quickLabels = useMemo(() => suppliedQuickLabels ?? getQuickLabels(), [suppliedQuickLabels]);
 
   useEffect(() => { setCopied(false); }, [element]);
 
@@ -194,6 +203,11 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
       ref={toolbarRef}
       className="annotation-toolbar fixed z-[100] bg-popover border border-border rounded-lg shadow-2xl"
       style={style}
+      // PDF selection tips are owned by react-pdf-highlighter, whose root
+      // dismisses the active selection on pointerdown outside its tip DOM.
+      // This toolbar is portalled to body, so stop the earlier pointer event as
+      // well as mousedown or its controls unmount before their click can fire.
+      onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -220,7 +234,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
             <div className="w-px h-5 bg-border mx-0.5" />
           </>
         )}
-        {!commentOnly && (
+        {!commentOnly && !hideDelete && (
           <ToolbarButton
             onClick={() => handleTypeSelect(AnnotationType.DELETION)}
             icon={<TrashIcon />}
@@ -245,15 +259,18 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
                 className={showQuickLabels ? "text-amber-500 bg-amber-500/10" : "text-amber-500 hover:bg-amber-500/10"}
               />
             )}
-            <ToolbarButton
-              onClick={() => onQuickLabel(THUMBS_UP_LABEL)}
-              icon={<span className="block w-4 h-4 text-sm leading-4 text-center">👍</span>}
-              label="Looks good"
-              className="hover:bg-green-500/10"
-            />
+            {showQuickApprove && (
+              <ToolbarButton
+                onClick={() => onQuickLabel(THUMBS_UP_LABEL)}
+                icon={<span className="block w-4 h-4 text-sm leading-4 text-center">👍</span>}
+                label="Looks good"
+                className="hover:bg-green-500/10"
+              />
+            )}
             {!commentOnly && showQuickLabels && zapButtonRef.current && (
               <FloatingQuickLabelPicker
                 anchorEl={zapButtonRef.current}
+                labels={quickLabels}
                 onSelect={(label) => {
                   setShowQuickLabels(false);
                   onQuickLabel(label);

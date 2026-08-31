@@ -125,7 +125,7 @@ Even with opt-in, the Bun terminal bridge still uses the tokenized WebSocket pat
 
 ## Pi Runtime
 
-The Pi extension server runs on Node, so it does not need the Bun sidecar or managed compiled-binary runtime.
+The Pi extension server runs on Node, so it does not need the Bun sidecar or managed compiled-binary runtime. In a source checkout installed with Bun, `node-pty` still has to compile its Linux native addon because its npm package does not ship a Linux prebuild. The repository patch keeps `node-pty`'s normal prebuild check, then invokes the pinned `node-gyp@11.5.0` through npm when compilation is required; a clean or forced `bun install` must leave `node_modules/.bun/node-pty@*/node_modules/node-pty/build/Release/pty.node` loadable by Node.
 
 It mirrors the browser-facing contract:
 
@@ -162,11 +162,14 @@ The panel includes:
 
 The redundant agent header was removed. When running, the first row is the agent name, cwd context, settings, and stop action.
 
+When the terminal is docked left and the document navigator is collapsed, the narrow Contents/Files rail stays in normal layout flow between the terminal and document. This keeps the file browser reachable; opening it places the full navigator beside the still-running terminal.
+
 The terminal intentionally has no rounded card frame or extra padding around xterm. The xterm scrollbar gap is hidden so the terminal fills the panel cleanly.
 
 Important files:
 
 - `packages/editor/App.tsx`
+- `packages/editor/agentTerminalLayout.ts`
 - `packages/editor/components/AnnotateAgentTerminalPanel.tsx`
 - `packages/editor/components/annotateAgentTerminalTheme.ts`
 - `packages/editor/index.css`

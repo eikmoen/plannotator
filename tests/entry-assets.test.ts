@@ -33,7 +33,7 @@ describe('review entry assets', () => {
     const editor = read('packages/editor/App.tsx');
     const theme = read('packages/ui/theme.css');
 
-    expect(editor).toContain("const browserCanvas = isHtmlSurface || gridEnabled ? 'background' : 'card';");
+    expect(editor).toContain("const browserCanvas = isHtmlSurface || isPdfSurface || gridEnabled ? 'background' : 'card';");
     expect(editor).toContain('data-pn-browser-canvas={browserCanvas}');
     expect(editor).toContain("data-pn-document-scroll={usesDocumentScroll ? 'true' : undefined}");
     expect(editor).toContain('sticky={!usesDocumentScroll}');

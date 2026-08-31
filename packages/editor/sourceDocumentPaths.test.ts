@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildSourceWatchSubscription,
+  canEditLinkedSourceDocument,
   dirnameBrowserPath,
   normalizeBrowserPath,
   pathIsInsideDir,
+  tracksLinkedSourceDocuments,
 } from './sourceDocumentPaths';
 
 describe('source document path helpers', () => {
@@ -30,6 +32,26 @@ describe('source document path helpers', () => {
     expect(pathIsInsideDir('C:\\repo\\docs\\a.md', 'C:/repo/docs')).toBe(true);
     expect(pathIsInsideDir('C:\\note.md', 'C:/')).toBe(true);
     expect(pathIsInsideDir('/repo/docs/a.md', '')).toBe(false);
+  });
+
+  test('tracks linked source documents for folder and PDF-navigation sessions', () => {
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'file', pdfNavigationMode: false })).toBe(false);
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'file', pdfNavigationMode: true })).toBe(true);
+    expect(tracksLinkedSourceDocuments({ annotateSource: 'folder', pdfNavigationMode: false })).toBe(true);
+  });
+
+  test('allows linked Markdown editing for folder and PDF-navigation sessions only', () => {
+    const base = {
+      linked: true,
+      sourceSaveEnabled: true,
+      annotateSource: 'file' as const,
+      pdfNavigationMode: false,
+    };
+    expect(canEditLinkedSourceDocument(base)).toBe(false);
+    expect(canEditLinkedSourceDocument({ ...base, pdfNavigationMode: true })).toBe(true);
+    expect(canEditLinkedSourceDocument({ ...base, annotateSource: 'folder' })).toBe(true);
+    expect(canEditLinkedSourceDocument({ ...base, pdfNavigationMode: true, sourceSaveEnabled: false })).toBe(false);
+    expect(canEditLinkedSourceDocument({ ...base, linked: false, sourceSaveEnabled: false })).toBe(true);
   });
 
   test('builds a stable exact-file watch subscription from Unix paths', () => {

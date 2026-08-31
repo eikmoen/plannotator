@@ -240,7 +240,7 @@ describe("message builders", () => {
       words: ["the", "aim", "doc"],
     });
     expect(message).toContain("the aim doc");
-    expect(message).toContain("plannotator annotate <file.md | file.txt | file.html | https://... | folder/>");
+    expect(message).toContain("plannotator annotate <file.md | file.pdf | file.html | https://... | folder/>");
     expect(message).not.toContain("If you are an agent");
   });
 

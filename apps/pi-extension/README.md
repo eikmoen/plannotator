@@ -266,9 +266,13 @@ As with `plannotator:request`, the channel is a plain string, so a companion can
 
 Plannotator does not send `Continue with the approved plan`, enter its executing phase, or track checklist progress in this mode. The companion extension owns execution after the handoff.
 
-### Markdown annotation
+### Document and PDF annotation
 
-Run `/plannotator-annotate <file.md>` to open any markdown file in the annotation UI. Useful for reviewing documentation or design specs with the agent.
+Run `/plannotator-annotate <file.md>` to render, annotate, or directly edit Markdown. Run `/plannotator-annotate <source.pdf>` to open the PDF annotation surface with Anchor, Definition, Example, and Thesis labels.
+
+PDF sessions save editable data beside the source in `metadata/annotations.json` and a bounded section in `annotations.md`. Existing `metadata/annotations-raw.json`, hidden imported annotations, and page mappings remain compatible. Ordinary **Save** and **Save & Done** operations do not modify the PDF bytes.
+
+In fixed-port remote mode, only one review surface can be active at a time. If another command runs after its browser tab was closed, Plannotator preserves and reopens the existing session instead of reporting a raw port conflict or preempting its draft. Finish it with **Save & Done**, or use **Close** to discard it, then retry the new command. Pi sessions are registered in the standard Plannotator session registry for `plannotator sessions` discovery; the local server probe also recovers sessions started by older Pi extension versions.
 
 URL targets work too. A loopback `http` URL that answers with an HTML page (a running dev app, e.g. `http://localhost:5173`) opens **live**: the app is served through a local reverse proxy and annotated in place, with HMR and WebSockets passed through. `--static` forces the classic markdown conversion; `--app` requires a live session and errors instead of falling back. Live sessions are unavailable in remote mode (`PLANNOTATOR_REMOTE`).
 
@@ -290,7 +294,7 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 |---------|-------------|
 | `/plannotator-plan-mode` | Toggle plan mode. The agent writes a markdown plan file anywhere in the working directory and submits its path |
 | `/plannotator-review` | Open code review UI for current changes |
-| `/plannotator-annotate <file>` | Open markdown file in annotation UI |
+| `/plannotator-annotate <file>` | Open Markdown, PDF, HTML, or supported text in the annotation UI |
 | `/plannotator-last` | Annotate the last assistant message |
 
 ## Flags

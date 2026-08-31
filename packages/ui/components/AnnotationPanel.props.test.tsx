@@ -136,6 +136,46 @@ describe('AnnotationPanel consumer props', () => {
     expect(document.querySelector('[data-annotation-card-footer="true"]')).toBeNull();
   });
 
+  test.skipIf(!hasDom)('PDF annotations reuse native cards and relabel through the native edit composer', async () => {
+    let updates: Partial<Annotation> | undefined;
+    await mount(
+      <AnnotationPanel
+        {...baseProps}
+        onEdit={(_id, next) => { updates = next; }}
+        pdfLabels={{ red: 'Anchor', blue: 'Definition', yellow: 'Example', green: 'Thesis' }}
+        annotations={[{
+          ...annotation,
+          pdfAnchor: {
+            position: { boundingRect: {}, rects: [], pageNumber: 4 },
+            content: { text: 'hello' },
+            color: 'blue',
+            label: 'Definition',
+            page: 4,
+            pageLabel: '2',
+            imported: true,
+          },
+        }]}
+      />,
+    );
+    const card = document.querySelector('[data-annotation-id="a1"]') as HTMLElement;
+    expect(card.textContent).toContain('Definition');
+    expect(card.textContent).toContain('p. 2');
+    expect(card.textContent).toContain('imported');
+
+    await act(async () => {
+      (card.querySelector('button[title="Edit annotation"]') as HTMLButtonElement).click();
+    });
+    const thesis = Array.from(card.querySelectorAll('button')).find((button) => button.textContent === 'Thesis');
+    await act(async () => {
+      (thesis as HTMLButtonElement).click();
+    });
+    const save = Array.from(card.querySelectorAll('button')).find((button) => button.textContent === 'Save');
+    await act(async () => {
+      (save as HTMLButtonElement).click();
+    });
+    expect(updates?.pdfAnchor).toEqual(expect.objectContaining({ color: 'green', label: 'Thesis' }));
+  });
+
   test.skipIf(!hasDom)('embedded presentation keeps the timeline and omits panel chrome', async () => {
     await mount(<AnnotationPanel {...baseProps} presentation="embedded" />);
     const panel = document.querySelector<HTMLElement>('[data-annotation-panel="true"]');

@@ -44,6 +44,9 @@ interface AppHeaderProps {
   compactNavigatorOpen?: boolean;
   onCompactNavigatorToggle?: () => void;
   compactDocumentTitle?: string;
+  /** Prominent bibliographic context for the active PDF surface. */
+  pdfDocumentTitle?: string;
+  pdfDocumentAuthors?: string[];
   compactSessionActions?: CompactPlanAction[];
   compactDocumentActions?: CompactPlanAction[];
   // Mode flags (stable after mount)
@@ -146,6 +149,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   compactNavigatorOpen = false,
   onCompactNavigatorToggle,
   compactDocumentTitle,
+  pdfDocumentTitle,
+  pdfDocumentAuthors,
   compactSessionActions,
   compactDocumentActions,
   isApiMode,
@@ -216,12 +221,17 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   bearConfigured,
   octarineConfigured,
 }) => {
+  const pdfAuthors = pdfDocumentAuthors?.join(' · ');
+  const pdfMetadataTitle = pdfAuthors
+    ? `${pdfDocumentTitle ?? ''}\n${pdfAuthors}`
+    : pdfDocumentTitle;
+
   return (
     <header
       data-app-header="true"
       className={`${compactTouchLayout ? 'h-[52px] grid grid-cols-[44px_minmax(0,1fr)_44px] items-center px-1' : 'h-12 flex items-center justify-between px-2 md:px-4'} border-b border-border/50 bg-card/50 backdrop-blur-xl z-[50] ${sticky ? 'sticky top-0' : 'relative'}`}
     >
-      <div className={compactTouchLayout ? 'flex items-center justify-start' : 'flex items-center gap-2'}>
+      <div className={`${compactTouchLayout ? 'flex items-center justify-start' : 'flex items-center gap-2'} relative z-10`}>
         {compactTouchLayout ? (
           compactNavigatorAvailable && onCompactNavigatorToggle ? (
             <CompactPlanNavigatorTrigger
@@ -236,6 +246,29 @@ export const AppHeader = React.memo<AppHeaderProps>(({
         )}
       </div>
 
+      {!compactTouchLayout && pdfDocumentTitle && (
+        <div
+          data-pn-pdf-document-metadata="true"
+          className="pointer-events-none absolute left-1/2 top-1/2 z-0 hidden w-[46vw] max-w-3xl min-w-0 -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center md:flex"
+          title={pdfMetadataTitle}
+        >
+          <span
+            data-pn-pdf-document-title="true"
+            className="block w-full truncate text-sm font-semibold leading-tight tracking-tight text-foreground"
+          >
+            {pdfDocumentTitle}
+          </span>
+          {pdfAuthors && (
+            <span
+              data-pn-pdf-document-authors="true"
+              className="mt-0.5 block w-full truncate text-[10px] leading-tight text-muted-foreground"
+            >
+              {pdfAuthors}
+            </span>
+          )}
+        </div>
+      )}
+
       {compactTouchLayout && (
         <div
           data-pn-compact-document-title="true"
@@ -246,7 +279,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
         </div>
       )}
 
-      <div className={`flex items-center gap-1 md:gap-2 ${compactTouchLayout ? 'justify-end' : ''}`}>
+      <div className={`relative z-10 flex items-center gap-1 md:gap-2 ${compactTouchLayout ? 'justify-end' : ''}`}>
         {/* Bot callback buttons — only shown when ?cb=&ct= params are present */}
         {!compactTouchLayout && callbackConfig && !isApiMode && isSharedSession && (
           <>

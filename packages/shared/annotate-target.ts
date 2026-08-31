@@ -198,7 +198,7 @@ export function selectAnnotateTokenTarget(
 }
 
 export const ANNOTATE_USAGE_TARGET =
-  "<file.md | file.txt | file.html | https://... | folder/>";
+  "<file.md | file.pdf | file.html | https://... | folder/>";
 
 /**
  * Tier-2 error: several tokens each name an existing target. Never guess;

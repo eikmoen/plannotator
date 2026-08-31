@@ -89,6 +89,7 @@
     "mermaid": "^11.12.2",
     "motion": "^12.38.0",
     "perfect-freehand": "^1.2.2",
+    "react-pdf-highlighter": "8.0.0-rc.0",
     "tailwind-merge": "^3.6.0",
     "unique-username-generator": "^1.5.1"
   },

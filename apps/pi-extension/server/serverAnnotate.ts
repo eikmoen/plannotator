@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { dirname, resolve as resolvePath } from "node:path";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 
 import {
@@ -83,6 +83,9 @@ import {
 	createAnnotateClientLeaseTracker,
 } from "../generated/annotate-client-lease.ts";
 import { createAnnotateDecisionSettler } from "../generated/annotate-decision.ts";
+import { describePdfSource, loadPdfAnnotationDocument, savePdfAnnotationDocument } from "../generated/pdf-annotation-store.ts";
+import { parsePdfByteRange } from "../generated/pdf-http.ts";
+import type { PdfAnnotation, PdfGlobalComment } from "../generated/pdf-annotations.ts";
 
 export interface AnnotateServerResult {
 	port: number;
@@ -229,6 +232,7 @@ export async function startAnnotateServer(options: {
 	clientLeaseTestOverrides?: { graceMs?: number; heartbeatMs?: number };
 	rawHtml?: string;
 	renderHtml?: boolean;
+	renderPdf?: boolean;
 	convertHtml?: boolean;
 	agentCwd?: string;
 	/** Project name for keying per-file version history (powers the annotate version diff). */
@@ -256,6 +260,19 @@ export async function startAnnotateServer(options: {
 	}
 
 	const gitUser = detectGitUser();
+	if (options.renderPdf && (options.mode || "annotate") !== "annotate") {
+		throw new Error("PDF annotation currently requires single-file annotate mode");
+	}
+	const pdfSource = options.renderPdf ? describePdfSource(resolvePath(options.filePath)) : null;
+	// Direct PDF sessions retain the file pane as an editable document navigator.
+	// Keep writes inside cwd when the source belongs to this workspace, otherwise
+	// inside the PDF package directory.
+	const pdfNavigationRoot = pdfSource
+		? isWithinDirectory(pdfSource.pdfPath, process.cwd())
+			? process.cwd()
+			: pdfSource.sourceDirectory
+		: undefined;
+	const editableNavigationRoot = options.mode === "annotate-folder" ? options.folderPath : pdfNavigationRoot;
 	const sharingEnabled =
 		options.sharingEnabled ?? resolveSharingEnabled(loadConfig());
 	const shareBaseUrl =
@@ -317,7 +334,9 @@ export async function startAnnotateServer(options: {
 			? `annotate-app\0${liveAppDraftIdentity(options.liveApp.targetUrl)}`
 			: options.mode === "annotate-folder" && options.folderPath
 				? `folder:${resolvePath(options.folderPath)}`
-				: options.renderHtml && options.rawHtml ? options.rawHtml : options.markdown;
+				: options.renderPdf && pdfSource
+					? `pdf:${pdfSource.pdfPath}`
+					: options.renderHtml && options.rawHtml ? options.rawHtml : options.markdown;
 	const draftKey = contentHash(draftSource);
 
 	// Per-file version history → powers the native version diff in annotate mode.
@@ -336,7 +355,7 @@ export async function startAnnotateServer(options: {
 	// (whose filePath is URL-shaped anyway) must never become history-eligible
 	// by accident.
 	const singleFileLocalAnnotate =
-		(options.mode || "annotate") === "annotate" && !/^https?:\/\//i.test(options.filePath);
+		(options.mode || "annotate") === "annotate" && !options.renderPdf && !/^https?:\/\//i.test(options.filePath);
 	let annotateHistory: AnnotateHistoryResult | null = null;
 	{
 		const historyContent = options.renderHtml && options.rawHtml ? options.rawHtml : options.markdown;
@@ -542,6 +561,7 @@ export async function startAnnotateServer(options: {
 	const sourceMode = options.mode || "annotate";
 	const singleFileSourceSaveEligible =
 		sourceMode === "annotate" &&
+		!options.renderPdf &&
 		!options.sourceConverted &&
 		!(options.renderHtml && options.rawHtml) &&
 		!/^https?:\/\//i.test(options.filePath);
@@ -562,6 +582,9 @@ export async function startAnnotateServer(options: {
 		}
 		if (mode === "annotate-folder") {
 			return { plan: options.markdown, sourceSave: disabledSourceSave("folder-mode") };
+		}
+		if (options.renderPdf) {
+			return { plan: "", sourceSave: disabledSourceSave("pdf-render") };
 		}
 		if (options.renderHtml && options.rawHtml) {
 			return { plan: options.markdown, sourceSave: disabledSourceSave("html-render") };
@@ -608,6 +631,17 @@ export async function startAnnotateServer(options: {
 		initialSingleFileSourcePath,
 	});
 
+	const resolveRequestPdfSource = (url: URL) => {
+		const requestedPath = url.searchParams.get("path");
+		if (!requestedPath) return pdfSource;
+		const resolved = resolveAllowedDocPath(requestedPath, url.searchParams.get("base"), {
+			rootPaths: getReferenceRootPaths(),
+		});
+		if (resolved.kind === "denied") throw new Error("Access denied: PDF is outside project root");
+		if (!/\.pdf$/i.test(resolved.path)) throw new Error("Requested file is not a PDF");
+		return describePdfSource(resolved.path);
+	};
+
 	// Live app session state, populated after the annotate port is known (the
 	// editor origins carry the port) and before the URL is returned to the
 	// caller for advertisement.
@@ -620,6 +654,99 @@ export async function startAnnotateServer(options: {
 
 		if (await externalAnnotations.handle(req, res, url)) return;
 		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
+
+		// Session-bound PDF routes never accept a client filesystem path.
+		if (url.pathname === "/api/pdf" && req.method === "GET") {
+			let selectedPdf;
+			try {
+				selectedPdf = resolveRequestPdfSource(url);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "PDF not found";
+				json(res, { error: message }, message.startsWith("Access denied") ? 403 : 404);
+				return;
+			}
+			if (!selectedPdf) {
+				json(res, { error: "PDF session unavailable" }, 404);
+				return;
+			}
+			const size = statSync(selectedPdf.pdfPath).size;
+			const rangeHeader = typeof req.headers.range === "string" ? req.headers.range : undefined;
+			const range = parsePdfByteRange(rangeHeader, size);
+			if (rangeHeader && !range) {
+				res.writeHead(416, { "Content-Range": `bytes */${size}`, "Accept-Ranges": "bytes" });
+				res.end("Requested range not satisfiable");
+				return;
+			}
+			const headers: Record<string, string> = {
+				"Content-Type": "application/pdf",
+				"Accept-Ranges": "bytes",
+				"Cache-Control": "no-store",
+			};
+			if (range) {
+				headers["Content-Length"] = String(range.end - range.start + 1);
+				headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
+				res.writeHead(206, headers);
+				createReadStream(selectedPdf.pdfPath, { start: range.start, end: range.end }).pipe(res);
+				return;
+			}
+			headers["Content-Length"] = String(size);
+			res.writeHead(200, headers);
+			createReadStream(selectedPdf.pdfPath).pipe(res);
+			return;
+		}
+
+		if (url.pathname === "/api/pdf/annotations") {
+			let selectedPdf;
+			try {
+				selectedPdf = resolveRequestPdfSource(url);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "PDF not found";
+				json(res, { error: message }, message.startsWith("Access denied") ? 403 : 404);
+				return;
+			}
+			if (!selectedPdf) {
+				json(res, { error: "PDF session unavailable" }, 404);
+				return;
+			}
+			if (req.method === "GET") {
+				json(res, loadPdfAnnotationDocument(selectedPdf));
+				return;
+			}
+			if (req.method === "POST") {
+				const declaredLength = Number(req.headers["content-length"] || "0");
+				if (declaredLength > 20 * 1024 * 1024) {
+					json(res, { error: "PDF annotation payload too large" }, 413);
+					return;
+				}
+				try {
+					const body = await parseBody(req) as { annotations?: unknown; globalComments?: unknown } | unknown[];
+					const annotations = Array.isArray(body) ? body : body.annotations;
+					const globalComments = Array.isArray(body) ? undefined : body.globalComments;
+					if (!Array.isArray(annotations)) {
+						json(res, { error: "annotations must be an array" }, 400);
+						return;
+					}
+					if (globalComments !== undefined && !Array.isArray(globalComments)) {
+						json(res, { error: "globalComments must be an array" }, 400);
+						return;
+					}
+					const document = savePdfAnnotationDocument(
+						selectedPdf,
+						annotations as PdfAnnotation[],
+						globalComments as PdfGlobalComment[] | undefined,
+					);
+					json(res, {
+						ok: true,
+						count: document.annotations.length,
+						globalCommentCount: document.globalComments.length,
+						document,
+					});
+				} catch (error) {
+					json(res, { error: error instanceof Error ? error.message : "Failed to save PDF annotations" }, 400);
+				}
+				return;
+			}
+		}
 
 		// API: Client-lease SSE — see generated/annotate-client-lease.ts.
 		// Only local direct structured annotate gates advertise and serve
@@ -731,7 +858,8 @@ export async function startAnnotateServer(options: {
 				clientLease: options.clientLeaseSupported
 					? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
 					: { enabled: false as const },
-				renderAs: displayRawHtml ? 'html' : 'markdown',
+				renderAs: options.renderPdf ? 'pdf' : displayRawHtml ? 'html' : 'markdown',
+				...(options.renderPdf ? { pdf: { url: "/api/pdf", annotationsUrl: "/api/pdf/annotations" } } : {}),
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
 				convertHtml: options.convertHtml ?? false,
@@ -742,7 +870,7 @@ export async function startAnnotateServer(options: {
 							diffCurrent: servedIsSnapshot || !servedHtml ? annotateHistory.diffCurrent : servedHtml,
 					  }
 					: {}),
-				sharingEnabled,
+				sharingEnabled: options.renderPdf ? false : sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,
 				repoInfo,
@@ -920,7 +1048,7 @@ export async function startAnnotateServer(options: {
 				sourceSaveFilePath: singleFileSourceSaveEligible
 					? initialSingleFileSourcePath ?? options.filePath
 					: undefined,
-				sourceSaveFolderPath: options.mode === "annotate-folder" ? options.folderPath : undefined,
+				sourceSaveFolderPath: editableNavigationRoot,
 				onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
 				rootPaths: getReferenceRootPaths(),
 				annotateHistory:
@@ -947,10 +1075,10 @@ export async function startAnnotateServer(options: {
 			if (singleFileSourceSaveEligible) {
 				const capability = createSourceSaveCapability("single-file", initialSingleFileSourcePath ?? options.filePath);
 				targetPath = capability.enabled ? capability.path : initialSingleFileSourcePath;
-			} else if (options.mode === "annotate-folder" && options.folderPath && typeof body.path === "string") {
+			} else if (editableNavigationRoot && typeof body.path === "string") {
 				targetPath = body.allowMissingBase
-					? resolveFolderSourceFileForSave(body.path, options.folderPath)
-					: resolveFolderSourceFile(body.path, options.folderPath);
+					? resolveFolderSourceFileForSave(body.path, editableNavigationRoot)
+					: resolveFolderSourceFile(body.path, editableNavigationRoot);
 				if (
 					body.allowMissingBase &&
 					targetPath &&
@@ -969,7 +1097,7 @@ export async function startAnnotateServer(options: {
 			const result = saveSourceFileAtomic(targetPath, body.text, body.baseHash, {
 				allowMissingBase: body.allowMissingBase === true,
 				missingBaseEol: body.baseEol,
-				allowedRoot: options.mode === "annotate-folder" ? options.folderPath : undefined,
+				allowedRoot: editableNavigationRoot,
 			});
 			const status = result.ok
 				? 200

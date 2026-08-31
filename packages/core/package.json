@@ -24,6 +24,7 @@
     "./goal-setup": "./goal-setup.ts",
     "./html-anchor": "./html-anchor.ts",
     "./open-in-apps": "./open-in-apps.ts",
+    "./pdf-annotations": "./pdf-annotations.ts",
     "./project": "./project.ts",
     "./source-save": "./source-save.ts",
     "./config-types": "./config-types.ts",

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import type { PdfAnnotationDocument } from '@plannotator/core/pdf-annotations';
 import { AnnotationType, type Annotation, type Block, type CodeAnnotation, type EditorAnnotation } from '../types';
 import { isCurrentUser } from '../utils/identity';
 import { ImageThumbnail } from './ImageThumbnail';
@@ -8,6 +9,7 @@ import { OverlayScrollArea } from './OverlayScrollArea';
 import { Button } from './ui/button';
 import { cn } from '../lib/utils';
 import { resolveReplyParents, resolveThreadRootTimestamps } from '@plannotator/core/annotation-threads';
+import { getLabelColors } from '../utils/quickLabels';
 
 // Card type-word colors. Deletion uses `destructive` (reliably red on every
 // theme, matching the in-document .deletion highlight). Comment uses the
@@ -130,6 +132,8 @@ interface PanelProps {
     *  gates what belongs in it. Selection and scrolling still work.
     *  Default false — today's behavior. */
   readOnly?: boolean;
+  /** Optional PDF adapter labels. Native cards use them for relabeling. */
+  pdfLabels?: PdfAnnotationDocument['labels'];
   /** Embed only the timeline body in a host-owned stage. The host owns the
     *  title, close control, visible-viewport geometry, and focus boundary. */
   presentation?: 'panel' | 'embedded';
@@ -162,6 +166,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   directEdits = null,
   renderCardFooter,
   readOnly = false,
+  pdfLabels,
   presentation = 'panel',
   unanchoredIds,
 }) => {
@@ -310,6 +315,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   onDelete={() => onDelete(entry.annotation.id)}
                   onEdit={onEdit ? (updates: Partial<Annotation>) => onEdit(entry.annotation.id, updates) : undefined}
                   readOnly={readOnly}
+                  pdfLabels={pdfLabels}
                   footer={renderCardFooter?.(entry.annotation)}
                   unanchored={unanchoredIds?.has(entry.annotation.id) ?? false}
                 />
@@ -539,12 +545,16 @@ const AnnotationCard: React.FC<{
   onDelete: () => void;
   onEdit?: (updates: Partial<Annotation>) => void;
   readOnly?: boolean;
+  pdfLabels?: PdfAnnotationDocument['labels'];
   footer?: React.ReactNode;
   /** The annotation has no live location in the document (host-reported). */
   unanchored?: boolean;
-}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, footer, unanchored = false }) => {
+}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, pdfLabels, footer, unanchored = false }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(annotation.text || '');
+  const [editPdfLabel, setEditPdfLabel] = useState(annotation.pdfAnchor
+    ? { color: annotation.pdfAnchor.color, label: annotation.pdfAnchor.label }
+    : null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -564,12 +574,20 @@ const AnnotationCard: React.FC<{
   const handleStartEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
     setEditText(annotation.text || '');
+    setEditPdfLabel(annotation.pdfAnchor
+      ? { color: annotation.pdfAnchor.color, label: annotation.pdfAnchor.label }
+      : null);
     setIsEditing(true);
   };
 
   const handleSaveEdit = () => {
     if (onEdit) {
-      onEdit({ text: editText });
+      onEdit({
+        text: editText,
+        ...(annotation.pdfAnchor && editPdfLabel
+          ? { pdfAnchor: { ...annotation.pdfAnchor, ...editPdfLabel } }
+          : {}),
+      });
     }
     setIsEditing(false);
   };
@@ -589,13 +607,37 @@ const AnnotationCard: React.FC<{
     }
   };
 
-  const typeColor = TYPE_COLOR[annotation.type] ?? 'text-muted-foreground';
-  const typeLabel = TYPE_LABEL[annotation.type] ?? 'Note';
+  const pdfLabelColors = annotation.pdfAnchor ? getLabelColors(annotation.pdfAnchor.color) : null;
+  const typeColor = annotation.pdfAnchor ? '' : TYPE_COLOR[annotation.type] ?? 'text-muted-foreground';
+  const typeLabel = annotation.pdfAnchor?.label || TYPE_LABEL[annotation.type] || 'Note';
   const isGlobal = annotation.type === AnnotationType.GLOBAL_COMMENT;
 
   // Shared edit textarea — matches the prototype composer primitive
   const editComposer = (
     <div onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+      {annotation.pdfAnchor && pdfLabels && editPdfLabel && (
+        <div className="mb-2 flex flex-wrap gap-1" aria-label="PDF annotation label">
+          {(Object.entries(pdfLabels) as Array<[keyof typeof pdfLabels, string]>).map(([color, label]) => {
+            const colors = getLabelColors(color);
+            const selected = editPdfLabel.color === color;
+            return (
+              <button
+                key={color}
+                type="button"
+                onClick={() => setEditPdfLabel({ color, label })}
+                className={cn(
+                  'rounded-md border px-2 py-1 text-[10px] font-medium transition-colors',
+                  selected ? 'border-current bg-muted' : 'border-border/50 hover:bg-muted/60',
+                )}
+                style={{ color: colors.text }}
+                aria-pressed={selected}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <textarea
         data-pn-mobile-editable="true"
         ref={textareaRef}
@@ -633,7 +675,21 @@ const AnnotationCard: React.FC<{
     >
       {/* Header: type word + author · time + actions */}
       <div className="mb-1.5 flex items-center gap-1.5">
-        <span className={cn('text-[11px] font-medium', typeColor)}>{typeLabel}</span>
+        <span
+          className={cn('text-[11px] font-medium', typeColor)}
+          style={pdfLabelColors ? { color: pdfLabelColors.text } : undefined}
+        >{typeLabel}</span>
+        {annotation.pdfAnchor && (
+          <span
+            className="max-w-[6rem] truncate rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+            title={`PDF page ${annotation.pdfAnchor.page}; displayed page ${annotation.pdfAnchor.pageLabel}`}
+          >
+            p. {annotation.pdfAnchor.pageLabel}
+          </span>
+        )}
+        {annotation.pdfAnchor?.imported && (
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">imported</span>
+        )}
         {annotation.diffContext && (
           <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-muted text-muted-foreground">
             diff

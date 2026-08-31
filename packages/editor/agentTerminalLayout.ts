@@ -36,6 +36,8 @@ export type AgentTerminalLayout = {
   /** The right-hand annotations/AI panel is not being displaced by the terminal. */
   isRightPanelVisible: boolean;
   dockClassName: string;
+  /** Keep the collapsed navigator rail reachable beside a left-docked terminal. */
+  collapsedSidebarTabsClassName: string;
   placement: AnnotateAgentTerminalPlacement;
   isHidden: boolean;
 };
@@ -79,6 +81,15 @@ export function getAgentTerminalLayout({
     ? 'flex h-full flex-shrink-0 group/agent-terminal'
     : `absolute ${hiddenPositionClass} top-0 h-full w-0 overflow-hidden pointer-events-none group/agent-terminal`;
   const directionClassName = isLeft ? 'flex-row' : 'flex-row-reverse';
+  // The usual collapsed navigator rail is absolutely pinned to the shell's
+  // left edge. A visible left-docked terminal occupies that edge, so pinning
+  // the rail there puts it underneath the terminal and removes the only path
+  // back to Contents / Files. Move it into normal flex flow immediately after
+  // the terminal instead. It then occupies its own narrow slot between the
+  // terminal and document without covering either surface.
+  const collapsedSidebarTabsClassName = isLeftVisible
+    ? 'hidden lg:flex relative z-20'
+    : 'hidden lg:flex absolute left-0 top-0 z-20';
 
   return {
     shouldRender,
@@ -88,6 +99,7 @@ export function getAgentTerminalLayout({
     showOnRight: shouldRender && !isLeft,
     isRightPanelVisible: isRightPanelOpen && !isRightVisible,
     dockClassName: `${wrapperClassName} ${directionClassName}`,
+    collapsedSidebarTabsClassName,
     placement,
     isHidden,
   };
