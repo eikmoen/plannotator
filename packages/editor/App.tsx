@@ -1499,17 +1499,6 @@ const App: React.FC = () => {
     else if (action === 'exit') exitWideMode();
   }, [canUseWideMode, enterViewMode, exitWideMode, isHtmlSurface, wideModeType]);
 
-  useDocumentViewShortcuts({
-    handlers: {
-      toggleFocusMode: {
-        when: (event) =>
-          canHandleDocumentChromeShortcut(event)
-          && ((canUseWideMode && !isHtmlSurface) || wideModeType !== null),
-        handle: handleToggleFocusMode,
-      },
-    },
-  });
-
   useAnnotateSidebarShortcuts({
     handlers: {
       toggleContents: {
@@ -2726,6 +2715,63 @@ const App: React.FC = () => {
     }
     handleEditToggle();                                          // commit edits + exit
   }, [isEditingMarkdown, cancelMode, confirmCancelEdits, handleEditToggle, handleDiscardEdits]);
+
+  const canHandleEditModeShortcut = useCallback((event: KeyboardEvent) => {
+    if (!canEditMarkdown || isPlanDiffActive || isHtmlSurface || isPdfSurface) return false;
+    if (!isEditingMarkdown) return canHandleDocumentChromeShortcut(event);
+    if (event.defaultPrevented) return false;
+    if (document.querySelector('[data-plannotator-confirm-dialog="true"]')) return false;
+    if (showExport || showImport || showFeedbackPrompt || showClaudeCodeWarning ||
+        showSourceFileEditWarning || showExitWarning || showApproveWithNotesConfirmation ||
+        showAgentWarning || showPermissionModeSetup || pendingPasteImage) return false;
+    return !submitted && !isSubmitting && !isExiting;
+  }, [
+    canEditMarkdown,
+    canHandleDocumentChromeShortcut,
+    isExiting,
+    isHtmlSurface,
+    isPdfSurface,
+    isPlanDiffActive,
+    isSubmitting,
+    isEditingMarkdown,
+    pendingPasteImage,
+    showAgentWarning,
+    showApproveWithNotesConfirmation,
+    showClaudeCodeWarning,
+    showExitWarning,
+    showExport,
+    showFeedbackPrompt,
+    showImport,
+    showPermissionModeSetup,
+    showSourceFileEditWarning,
+    submitted,
+  ]);
+
+  const handleEditModeShortcut = useCallback(() => {
+    if (cancelMode) {
+      toast('Save before leaving Edit mode', {
+        description: 'Save the file first, or use the Cancel control to discard your edits.',
+      });
+      return;
+    }
+    handleEditToggle();
+  }, [cancelMode, handleEditToggle]);
+
+  useDocumentViewShortcuts({
+    handlers: {
+      toggleFocusMode: {
+        when: (event) =>
+          canHandleDocumentChromeShortcut(event)
+          && ((canUseWideMode && !isHtmlSurface) || wideModeType !== null),
+        handle: handleToggleFocusMode,
+      },
+      toggleEditMode: {
+        when: canHandleEditModeShortcut,
+        handle: handleEditModeShortcut,
+      },
+    },
+  });
+
   // Drop the discard confirmation once it no longer applies — exited the editor,
   // or the doc went clean (e.g. the user saved).
   useEffect(() => {
