@@ -20,6 +20,14 @@ export const documentViewShortcuts = defineShortcutScope({
       displayOrder: 10,
       preventDefault: true,
     },
+    toggleEditMode: {
+      description: 'Toggle edit mode',
+      bindings: ['Mod+E'],
+      section: 'View',
+      hint: 'Enters or leaves direct Markdown editing. Save dirty source files before leaving Edit mode.',
+      displayOrder: 20,
+      preventDefault: true,
+    },
   },
 });
 

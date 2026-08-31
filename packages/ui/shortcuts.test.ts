@@ -132,6 +132,20 @@ describe('shortcuts', () => {
     }
   });
 
+  // Editing is available on both Markdown plan surfaces. Keep one claimant so
+  // a single chord cannot enter and immediately leave Edit mode while the
+  // shortcut runtime still has no cross-scope arbitration.
+  it('binds edit mode once on every plan surface', () => {
+    for (const registry of [planReviewSettingsShortcutRegistry, annotateSettingsShortcutRegistry]) {
+      expect(getShortcut(registry, 'document-view', 'toggleEditMode')?.bindings).toEqual(['Mod+E']);
+
+      const claimants = listRegistryShortcuts(registry)
+        .filter(entry => entry.bindings.includes('Mod+E'))
+        .map(entry => `${entry.scopeId}.${entry.actionId}`);
+      expect(claimants).toEqual(['document-view.toggleEditMode']);
+    }
+  });
+
   // The mode switcher renders on both plan surfaces, so the scope has to reach
   // both registries — and each digit has to stay a single claimant, since the
   // dispatcher has no cross-scope arbitration.
