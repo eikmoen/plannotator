@@ -37,7 +37,7 @@ import {
 	resolveUserPath,
 	isWithinProjectRoot,
 	warmFileListCache,
-	ANNOTATABLE_DOC_REGEX,
+	getAnnotatableDocRegex,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "../generated/resolve-file.ts";
@@ -93,6 +93,19 @@ export interface HandleDocOptions {
 	 */
 	annotateHistory?: {
 		compute: (resolvedFilePath: string, content: string) => FolderAnnotateHistory | null;
+	};
+	/**
+	 * Single-file rendered-HTML sessions: when /api/doc serves the session's
+	 * ROOT document (`path` equals the resolved root path) as raw HTML, merge
+	 * the version-diff fields `compute` derives from the bytes just read
+	 * (`previousPlan`/`versionInfo`/`diffHtml`, the same names /api/plan
+	 * uses) into the response. This is what lets the in-app Refresh keep the
+	 * version diff. Every other document is untouched. Mirrors the Bun
+	 * handler in packages/server/reference-handlers.ts.
+	 */
+	rootHtmlVersionDiff?: {
+		path: string;
+		compute: (currentHtml: string) => Record<string, unknown>;
 	};
 }
 
@@ -233,6 +246,17 @@ function applyDocOptions<T extends Record<string, unknown>>(
 	sourceSnapshot?: SourceFileSnapshot,
 ): DocOptionsResult<T> {
 	const next: Record<string, unknown> = { ...data };
+	// Root-document version diff (see HandleDocOptions.rootHtmlVersionDiff):
+	// computed on the raw bytes, before the asset rewrite below, because the
+	// diff renderer rewrites its own output the same way.
+	if (
+		options.rootHtmlVersionDiff &&
+		data.renderAs === "html" &&
+		typeof data.rawHtml === "string" &&
+		data.filepath === options.rootHtmlVersionDiff.path
+	) {
+		Object.assign(next, options.rootHtmlVersionDiff.compute(data.rawHtml));
+	}
 	if (
 		typeof next.rawHtml === "string" &&
 		typeof next.filepath === "string" &&
@@ -303,10 +327,12 @@ function jsonDoc(
 	json(res, applyDocOptions(data, options, sourceSnapshot), status);
 }
 
-/** Recursively walk a directory collecting files by extension, skipping ignored dirs. */
-const FILE_BROWSER_EXTENSIONS = ANNOTATABLE_DOC_REGEX;
-
-function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = FILE_BROWSER_EXTENSIONS): void {
+/**
+ * Recursively walk a directory collecting files by extension, skipping ignored
+ * dirs. The default matcher is resolved per call, not captured at module load:
+ * it includes the user's configured extra markdown extensions (#1307).
+ */
+function walkMarkdownFiles(dir: string, root: string, results: string[], extensions: RegExp = getAnnotatableDocRegex()): void {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
@@ -328,7 +354,7 @@ function walkMarkdownFiles(dir: string, root: string, results: string[], extensi
 }
 
 function includeWorkspaceFile(relativePath: string, _change: WorkspaceFileChange): boolean {
-	return FILE_BROWSER_EXTENSIONS.test(relativePath) && !isFileBrowserExcludedPath(relativePath);
+	return getAnnotatableDocRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
 }
 
 /** Serve a linked markdown document. Uses shared resolveMarkdownFile for parity with Bun server. */
@@ -354,8 +380,9 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 	// .xml). Without it, those paths keep the syntax-highlighted code-file
 	// popout response, so code-file links inside documents are unaffected.
 	const forceDoc = url.searchParams.get("doc") === "1";
+	const docExtensions = getAnnotatableDocRegex();
 	const wantsDocRender = (path: string) =>
-		ANNOTATABLE_DOC_REGEX.test(path) && (forceDoc || !isCodeFilePath(path));
+		docExtensions.test(path) && (forceDoc || !isCodeFilePath(path));
 	if (
 		resolvedBase &&
 		!isAbsoluteUserPath(requestedPath) &&

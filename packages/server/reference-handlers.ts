@@ -26,7 +26,7 @@ import {
 	isWithinProjectRoot,
 	getFileBrowserMaxFiles,
 	warmFileListCache,
-	ANNOTATABLE_DOC_REGEX,
+	getAnnotatableDocRegex,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "@plannotator/shared/resolve-file";
@@ -80,6 +80,18 @@ export interface HandleDocOptions {
 	 */
 	annotateHistory?: {
 		compute: (resolvedFilePath: string, content: string) => FolderAnnotateHistory | null;
+	};
+	/**
+	 * Single-file rendered-HTML sessions: when /api/doc serves the session's
+	 * ROOT document (`path` equals the resolved root path) as raw HTML, merge
+	 * the version-diff fields `compute` derives from the bytes just read
+	 * (`previousPlan`/`versionInfo`/`diffHtml`, the same names /api/plan
+	 * uses) into the response. This is what lets the in-app Refresh keep the
+	 * version diff. Every other document is untouched.
+	 */
+	rootHtmlVersionDiff?: {
+		path: string;
+		compute: (currentHtml: string) => Record<string, unknown>;
 	};
 }
 
@@ -219,6 +231,17 @@ function applyDocOptions<T extends Record<string, unknown>>(
 	sourceSnapshot?: SourceFileSnapshot,
 ): DocOptionsResult<T> {
 	const next: Record<string, unknown> = { ...data };
+	// Root-document version diff (see HandleDocOptions.rootHtmlVersionDiff):
+	// computed on the raw bytes, before the asset rewrite below, because the
+	// diff renderer rewrites its own output the same way.
+	if (
+		options.rootHtmlVersionDiff &&
+		data.renderAs === "html" &&
+		typeof data.rawHtml === "string" &&
+		data.filepath === options.rootHtmlVersionDiff.path
+	) {
+		Object.assign(next, options.rootHtmlVersionDiff.compute(data.rawHtml));
+	}
 	if (
 		typeof next.rawHtml === "string" &&
 		typeof next.filepath === "string" &&
@@ -310,8 +333,9 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 	// .xml). Without it, those paths keep the syntax-highlighted code-file
 	// popout response, so code-file links inside documents are unaffected.
 	const forceDoc = url.searchParams.get("doc") === "1";
+	const docExtensions = getAnnotatableDocRegex();
 	const wantsDocRender = (path: string) =>
-		ANNOTATABLE_DOC_REGEX.test(path) && (forceDoc || !isCodeFilePath(path));
+		docExtensions.test(path) && (forceDoc || !isCodeFilePath(path));
 	if (
 		resolvedBase &&
 		!isAbsoluteUserPath(requestedPath) &&
@@ -648,10 +672,11 @@ export async function handleObsidianDoc(req: Request): Promise<Response> {
 
 // --- File Browser ---
 
-const FILE_BROWSER_EXTENSIONS = ANNOTATABLE_DOC_REGEX;
-
+// Resolved per call, not captured at module load: the accepted set includes
+// the user's configured extra markdown extensions (#1307), which the shared
+// resolver reads from config.json on first use.
 function includeWorkspaceFile(relativePath: string, _change: WorkspaceFileChange): boolean {
-	return FILE_BROWSER_EXTENSIONS.test(relativePath) && !isFileBrowserExcludedPath(relativePath);
+	return getAnnotatableDocRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
 }
 
 type FileBrowserWalkState = {
@@ -685,7 +710,7 @@ async function walkFileBrowserFiles(dir: string, root: string, state: FileBrowse
 		if (entry.isDirectory()) {
 			if (isFileBrowserExcludedPath(relativePath)) continue;
 			await walkFileBrowserFiles(fullPath, root, state);
-		} else if (entry.isFile() && FILE_BROWSER_EXTENSIONS.test(entry.name)) {
+		} else if (entry.isFile() && getAnnotatableDocRegex().test(entry.name)) {
 			if (isFileBrowserExcludedPath(relativePath)) continue;
 			addFileBrowserFile(state, relativePath);
 		}

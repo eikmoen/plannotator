@@ -8,6 +8,7 @@ import {
   type JjEvoLogEntry,
   JJ_TRUNK_REVSET,
   jjLineBaseRevset,
+  parseRemoteBookmark,
   validateFilePath,
 } from "./review-core";
 
@@ -22,9 +23,34 @@ export {
 export interface ReviewJjRuntime {
   runJj: (
     args: string[],
-    options?: { cwd?: string; timeoutMs?: number },
+    options?: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number },
   ) => Promise<GitCommandResult>;
 }
+
+// `reachable(@, mutable())` is JJ's definition of the stack being worked on.
+// Its root parents are where that line diverged from immutable history.
+//
+// `latest(..., 1)` is what keeps the query single-record. A criss-cross history
+// can leave several fork points, and the parser below reads one record only, so
+// the tie-break belongs in the revset where it is deliberate and testable
+// rather than in a silent "first row wins" slice. It also matters for
+// correctness: bookmark preference (remote before local) is only meaningful
+// within one commit, so a multi-row answer could otherwise pick a remote
+// bookmark from one commit over a local bookmark on a nearer one.
+const JJ_LINE_BASE_REVSET = "latest(fork_point(roots(reachable(@, mutable()))-), 1)";
+
+// `jj git push --change` mints bookmarks under `git.push-bookmark-prefix`
+// (default `push-`). They name one change, not a line of work, so they are
+// never a useful review base. They reach the fork point in practice: a
+// colleague's pushed change bookmark arrives as an untracked remote bookmark,
+// which makes its commit immutable and therefore a candidate base, and the
+// reviewer would be told they are comparing against `push-vmopwunwxopv@origin`.
+const JJ_GENERATED_PUSH_BOOKMARK_PREFIX = "push-";
+
+// `commit_id` renders in full, so an all-zero id is the virtual root commit.
+// A repo with no immutable history forks there, and a 40-zero hash means
+// nothing to a reviewer, so keep the `trunk()` sentinel for that case.
+const JJ_ROOT_COMMIT_ID = /^0+$/;
 
 export async function detectJjWorkspace(
   runtime: ReviewJjRuntime,
@@ -75,6 +101,100 @@ export async function getJjContext(
     vcsType: "jj",
     jjEvologs: evologs.length >= 2 ? evologs : undefined,
   };
+}
+
+export function isJjSnapshotDiffType(diffType: string): boolean {
+  return diffType === "jj-current"
+    || diffType === "jj-last"
+    || diffType === "jj-line"
+    || diffType === "jj-evolog";
+}
+
+/**
+ * One end of an analysis snapshot, expressed so a merge revision cannot make it
+ * ambiguous.
+ *
+ * `jj diff --from/--to` take exactly ONE revision. The parent shorthands do not
+ * guarantee that: `@-` is `parents(@)`, so on a merge revision both `@-` and
+ * `parents(@-)` resolve to several revisions and jj rejects the command
+ * outright ("resolved to more than one revision") — even though the visible
+ * `jj diff -r @` review still renders. Parent hops are therefore never encoded
+ * as revsets; they are walked first-parent-first against the repository, which
+ * is the same side `getJjFileContentsForDiff` already expands merges on.
+ */
+export interface JjSnapshotEndpoint {
+  /** Revset that must itself resolve to a single revision (`@`, a commit id, …). */
+  revset: string;
+  /** First-parent hops to walk from `revset`. Zero uses `revset` verbatim. */
+  firstParentSteps: number;
+}
+
+export function getJjSnapshotRevsets(
+  diffType: DiffType,
+  compareTarget: string,
+): { from: JjSnapshotEndpoint; to: JjSnapshotEndpoint } | null {
+  switch (diffType) {
+    case "jj-current":
+      return { from: { revset: "@", firstParentSteps: 1 }, to: { revset: "@", firstParentSteps: 0 } };
+    case "jj-last":
+      return { from: { revset: "@", firstParentSteps: 2 }, to: { revset: "@", firstParentSteps: 1 } };
+    case "jj-line":
+      return {
+        from: {
+          revset: jjLineBaseRevset(compareTarget.length > 0 ? compareTarget : JJ_TRUNK_REVSET),
+          firstParentSteps: 0,
+        },
+        to: { revset: "@", firstParentSteps: 0 },
+      };
+    case "jj-evolog":
+      return compareTarget.length > 0
+        ? { from: { revset: compareTarget, firstParentSteps: 0 }, to: { revset: "@", firstParentSteps: 0 } }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** Resolve one endpoint to a revision `jj diff` accepts as a single argument. */
+export async function resolveJjSnapshotEndpoint(
+  runtime: ReviewJjRuntime,
+  endpoint: JjSnapshotEndpoint,
+  cwd?: string,
+): Promise<string> {
+  let revision = endpoint.revset;
+  for (let step = 0; step < endpoint.firstParentSteps; step += 1) {
+    const parent = await resolveJjFirstParentCommitId(runtime, revision, cwd);
+    if (!parent) {
+      throw new Error("This Jujutsu revision has no parent revision to compare against.");
+    }
+    revision = parent;
+  }
+  return revision;
+}
+
+/**
+ * The FIRST parent's commit id. jj lists a merge's parents in the order they
+ * were given to `jj new`, so index 0 is stable across invocations — unlike
+ * `heads()`/`latest()`, which order by graph shape or timestamp.
+ */
+async function resolveJjFirstParentCommitId(
+  runtime: ReviewJjRuntime,
+  revision: string,
+  cwd?: string,
+): Promise<string | null> {
+  const result = await runtime.runJj([
+    "--ignore-working-copy",
+    "log",
+    "--no-graph",
+    "-r",
+    revision,
+    "-T",
+    'parents.map(|p| p.commit_id()).join("\n")',
+  ], { cwd });
+  if (result.exitCode !== 0) {
+    throw new Error(firstErrorLine(result.stderr) ?? "Jujutsu could not resolve the snapshot revision.");
+  }
+  return result.stdout.split("\n").map((line) => line.trim()).find(Boolean) ?? null;
 }
 
 export async function runJjDiff(
@@ -274,13 +394,35 @@ export async function selectDefaultJjCompareTarget(
     "log",
     "--no-graph",
     "-r",
-    JJ_TRUNK_REVSET,
+    JJ_LINE_BASE_REVSET,
     "-T",
-    "json(bookmarks)",
+    'json(bookmarks) ++ "\\t" ++ commit_id ++ "\\n"',
   ], { cwd });
+  // Every unresolvable case falls back to `trunk()`, which is what this
+  // returned before the line-of-work base was inferred at all. The only live
+  // caller is `getJjContext`, which runs on the review startup path with no
+  // handler above it, so throwing here does not report a problem: it aborts
+  // `plannotator review` with a stack trace before the server is built. That
+  // also covers a `jj` too old for `fork_point`/`reachable`, where the revset
+  // itself fails and the previous default is still perfectly serviceable.
   if (result.exitCode !== 0) return JJ_TRUNK_REVSET;
 
-  return parseJjResolvedBookmarks(result.stdout)[0] ?? JJ_TRUNK_REVSET;
+  const [record] = splitJjTemplateRecords(result.stdout);
+  if (!record) return JJ_TRUNK_REVSET;
+
+  const fields = splitJjTemplateFields(record);
+  const bookmark = parseJjResolvedBookmarks(fields?.[0] ?? record)
+    .find((name) => !isGeneratedPushBookmark(name));
+  if (bookmark) return bookmark;
+
+  const commitId = fields?.[1]?.trim();
+  if (commitId && !JJ_ROOT_COMMIT_ID.test(commitId)) return commitId;
+  return JJ_TRUNK_REVSET;
+}
+
+function isGeneratedPushBookmark(target: string): boolean {
+  const name = parseRemoteBookmark(target)?.name ?? target;
+  return name.startsWith(JJ_GENERATED_PUSH_BOOKMARK_PREFIX);
 }
 
 function parseJjResolvedBookmarks(value: string): string[] {

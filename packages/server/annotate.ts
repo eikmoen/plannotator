@@ -16,8 +16,8 @@ import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
-import { handleFileBrowserFilesStream } from "./reference-watch";
-import { resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
+import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
+import { getExtraMarkdownExtensions, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash, deleteDraft } from "./draft";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
@@ -43,7 +43,8 @@ import {
   type AnnotateClientLeaseStreamSession,
 } from "@plannotator/shared/annotate-client-lease";
 import { createAnnotateDecisionSettler } from "@plannotator/shared/annotate-decision";
-import { saveConfig, detectGitUser, getServerConfig, loadConfig, resolveAIEnabled, resolveAnnotateHistory } from "./config";
+import { saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveAnnotateHistory } from "./config";
+import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { existsSync } from "fs";
 import { dirname, resolve as resolvePath } from "path";
 import { isWithinDirectory } from "@plannotator/shared/html-assets-node";
@@ -53,6 +54,14 @@ import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
 import { isAIEndpointPath, type AIEndpoints } from "@plannotator/ai";
 import { createHtmlAssetRegistry } from "./html-assets";
 import { createBunAgentTerminalBridge } from "./agent-terminal";
+import { startLiveAppProxy, type LiveAppProxy } from "./live-proxy";
+import {
+  buildLiveAppUrl,
+  buildLiveEditorOrigins,
+  composeLiveBridgeJs,
+  liveAppDraftIdentity,
+} from "@plannotator/shared/live-proxy-core";
+import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
 
 // Re-export utilities
@@ -71,8 +80,22 @@ export interface AnnotateServerOptions {
   htmlContent: string;
   /** Origin identifier for UI customization */
   origin?: Origin;
-  /** UI mode: "annotate" for files, "annotate-last" for last agent message, "annotate-folder" for folders */
-  mode?: "annotate" | "annotate-last" | "annotate-folder";
+  /** UI mode: "annotate" for files, "annotate-last" for last agent message,
+   *  "annotate-folder" for folders, "annotate-app" for live local apps */
+  mode?: "annotate" | "annotate-last" | "annotate-folder" | "annotate-app";
+  /**
+   * Live local app annotation (mode "annotate-app"): the server starts a
+   * loopback reverse proxy mirroring targetUrl and serves the composed
+   * bridge body from it. The caller supplies the bridge sources (this
+   * package deliberately does not import @plannotator/ui); the server owns
+   * the per-session token. Refused outright in remote mode.
+   */
+  liveApp?: {
+    targetUrl: string;
+    bridgeScript: string;
+    bridgeBootstrap: string;
+    annotationCss: string;
+  };
   /** Folder path when annotating a directory (used as projectRoot for file browser) */
   folderPath?: string;
   /**
@@ -101,7 +124,10 @@ export interface AnnotateServerOptions {
    * Whether this transport can safely resolve an abandoned gate automatically.
    * Only local direct structured annotate gates (`--gate --json`, not `--hook`,
    * not remote/shared) qualify — see supportsAnnotateClientLease in
-   * apps/hook/server/annotate-output.ts.
+   * apps/hook/server/annotate-output.ts. The server additionally forces this
+   * off while `tailnetPublished` is set: `--tailscale` counts as local to the
+   * CLI predicate, but the session is reached through the serve proxy, whose
+   * disconnects would read as abandonment exactly like a remote tunnel's.
    */
   clientLeaseSupported?: boolean;
   /**
@@ -119,10 +145,19 @@ export interface AnnotateServerOptions {
   convertHtml?: boolean;
   /** CWD where the optional annotate agent terminal should launch. Defaults to process.cwd(). */
   agentCwd?: string;
+  /**
+   * The session is loopback-bound but published across the user's tailnet
+   * (--tailscale). Gates the agent terminal behind the same
+   * PLANNOTATOR_AGENT_TERMINAL_REMOTE opt-in remote mode uses: the PTY token
+   * is not an auth boundary against network peers (wsPath ships in the
+   * /api/plan capability payload), so tailnet reachability implies terminal
+   * reachability.
+   */
+  tailnetPublished?: boolean;
   /** Project name for keying per-file version history (powers the annotate version diff). */
   project?: string;
   /** Called when server starts with the URL, remote status, and port */
-  onReady?: (url: string, isRemote: boolean, port: number) => void;
+  onReady?: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
 }
 
 export interface AnnotateServerResult {
@@ -146,6 +181,39 @@ export interface AnnotateServerResult {
 }
 
 // --- Server Implementation ---
+
+/**
+ * Run shutdown disposal steps with per-step isolation, then close the
+ * listener. One throwing step (agent-terminal teardown is historically
+ * fragile, #1314) must never skip the steps after it — before this guard, a
+ * throw mid-sequence orphaned the live proxy's listener and its upstream
+ * WebSockets. Failures are reported through `log` (stderr by default) with
+ * the step's name; `closeListener` runs unconditionally, even against a
+ * pathological throw outside the steps.
+ */
+export function runGuardedShutdown(
+  steps: ReadonlyArray<readonly [name: string, dispose: () => void]>,
+  closeListener: () => void,
+  log: (message: string, error: unknown) => void = (message, error) =>
+    console.error(message, error),
+): void {
+  try {
+    for (const [name, dispose] of steps) {
+      try {
+        dispose();
+      } catch (error) {
+        log(`[plannotator] annotate shutdown: ${name} disposal failed:`, error);
+      }
+    }
+  } finally {
+    closeListener();
+  }
+}
+
+// Stable identity for a live app session's annotation draft — moved to the
+// shared live-proxy core so the Pi mirror keys drafts identically; re-exported
+// here for existing import sites.
+export { liveAppDraftIdentity } from "@plannotator/shared/live-proxy-core";
 
 /**
  * Start the Annotate server
@@ -173,15 +241,39 @@ export async function startAnnotateServer(
     pasteApiUrl,
     gate = false,
     approvalNotesSupported = false,
-    clientLeaseSupported = false,
     clientLeaseTestOverrides,
     rawHtml,
     renderHtml = false,
     convertHtml = false,
     agentCwd,
     project,
+    liveApp,
     onReady,
   } = options;
+
+  // Effective client-lease capability. A --tailscale session forces local
+  // mode, so the CLI-side supportsAnnotateClientLease predicate reads it as
+  // local — but every client reaches it through the tailscale serve proxy,
+  // and a proxy/network disconnect longer than the grace period would
+  // auto-dismiss a live review. Same rationale that keeps the capability off
+  // for remote/shared sessions; this is the single decision point both the
+  // /api/plan advert and the SSE endpoint below read.
+  const clientLeaseSupported =
+    (options.clientLeaseSupported ?? false) && options.tailnetPublished !== true;
+
+  // Remote hard-off, defense in depth behind the CLI check: a live proxy
+  // relays the user's authenticated dev app, so it must never coexist with a
+  // beyond-loopback annotate bind. No override env var exists on purpose.
+  // A --tailscale session forces local mode but is reachable across the
+  // tailnet through the serve proxy, so it is exposure all the same (the
+  // annotate agent terminal treats tailnet publication identically).
+  if (liveApp && (isRemoteSession() || options.tailnetPublished === true)) {
+    throw new Error(
+      options.tailnetPublished === true && !isRemoteSession()
+        ? "Live app annotation is unavailable in tailnet-published sessions"
+        : "Live app annotation is unavailable in remote mode",
+    );
+  }
 
   const isRemote = isRemoteSession();
   const wslFlag = await isWSL();
@@ -194,10 +286,14 @@ export async function startAnnotateServer(
   // when rendering HTML. Only single local files (not URLs/folders/messages).
   const annotateProjectName = project ?? "_unknown";
   const annotateHistoryEnabled = resolveAnnotateHistory(loadConfig());
-  // Single local file sessions are the only ones the annotate-history contract
-  // covers: URL / folder / agent-message sessions never write session content
-  // to the data dir. Both the version history below and the durable submit
-  // records share this gate.
+  // Single local file sessions are the only ones this eager gate covers.
+  // URL, agent-message, and live-app sessions never write session content to
+  // the data dir. Folder sessions do participate in per-file version history,
+  // but lazily through /api/doc (see computeFolderAnnotateHistory below), not
+  // here. The durable submit records stay single-local-file only. The
+  // mode === "annotate" check is deliberate and explicit: "annotate-app"
+  // (whose filePath is URL-shaped anyway) must never become history-eligible
+  // by accident.
   const singleFileLocalAnnotate = mode === "annotate" && !/^https?:\/\//i.test(filePath);
   let annotateHistory: AnnotateHistoryResult | null = null;
   {
@@ -233,10 +329,23 @@ export async function startAnnotateServer(
     folderAnnotateHistoryCache.set(resolvedFilePath, result);
     return result;
   }
+  // Draft identity. Content-derived for the modes that HAVE content, and
+  // path-derived for the modes that do not.
+  //
+  // A live app session has no document body at all: annotate-app resolves
+  // `markdown` to "" by construction, because the page lives behind the
+  // proxy rather than in a string the server holds. Hashing that empty body
+  // gave EVERY live session on the machine the one hash of "", so two
+  // sessions against different dev servers shared a single draft slot and
+  // deterministically overwrote each other's in-progress annotations. The
+  // session's target is its identity here, exactly as the folder path is the
+  // folder session's identity.
   const draftSource =
-    mode === "annotate-folder" && folderPath
-      ? `folder:${resolvePath(folderPath)}`
-      : renderHtml && rawHtml ? rawHtml : markdown;
+    mode === "annotate-app" && liveApp
+      ? `annotate-app\0${liveAppDraftIdentity(liveApp.targetUrl)}`
+      : mode === "annotate-folder" && folderPath
+        ? `folder:${resolvePath(folderPath)}`
+        : renderHtml && rawHtml ? rawHtml : markdown;
   const draftKey = contentHash(draftSource);
 
   // Durable submit records (#678): the caller consuming waitForDecision() may
@@ -254,10 +363,11 @@ export async function startAnnotateServer(
   // stopped reading), so there is no narrower condition to key off.
   //
   // Scope: identical to the version-history gate above — single local files
-  // only. annotate-last / URL / folder sessions were stateless before this
-  // record existed and STAY stateless: their submissions quote agent messages
-  // or fetched pages, which the documented annotateHistory contract never
-  // covered writing to disk.
+  // only. annotate-last / URL / folder sessions never wrote submit
+  // records and still do not: their submissions quote agent messages or
+  // fetched pages, which this record was never meant to persist. (Folder
+  // sessions do write lazy per-file version history via /api/doc; that is
+  // a separate, documented pipeline with its own gate.)
   //
   // Returns whether the draft delete may proceed: true when the record was
   // written, when there was no user content to lose, or when the session
@@ -292,7 +402,64 @@ export async function startAnnotateServer(
   const agentTerminal = await createBunAgentTerminalBridge({
     enabled: supportsAnnotateAgentTerminalMode(mode),
     cwd: agentCwd ?? process.cwd(),
+    tailnetPublished: options.tailnetPublished === true,
   });
+
+  // The fallback is silent to the reviewer, so the reason is logged once per
+  // process: a genuine bug in the read must not hide behind the snapshot.
+  let rootHtmlUnreadableWarned = false;
+  const warnRootHtmlUnreadable = (path: string, err: unknown) => {
+    if (rootHtmlUnreadableWarned) return;
+    rootHtmlUnreadableWarned = true;
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[plannotator] could not read the HTML root ${path}; serving the startup snapshot instead: ${message}`);
+  };
+
+  // A local rendered-HTML root is served from its CURRENT bytes, not the
+  // startup snapshot: the reviewer can Refresh in-app or reload the tab after
+  // an agent edits the file, and both /api/plan and /api/share-html must then
+  // describe the page the annotations were placed on. The snapshot is only
+  // the fallback when the file is gone or has grown past the annotate cap.
+  const rootHtmlSourcePath =
+    renderHtml && rawHtml && !/^https?:\/\//i.test(filePath) ? resolvePath(filePath) : null;
+  type RootHtmlRead =
+    | { kind: "current"; html: string }
+    | { kind: "snapshot"; reason: "missing" | "too-large" | "unreadable" };
+  async function readRootHtml(): Promise<RootHtmlRead | null> {
+    if (!rootHtmlSourcePath) return null;
+    // A present-but-unreadable root (permissions revoked, the path replaced
+    // by a directory) is the same fallback as a missing one: the startup
+    // snapshot, with its version diff. The read must never throw out of a
+    // request handler, which would turn a tab reload into a 500.
+    try {
+      const file = Bun.file(rootHtmlSourcePath);
+      if (!(await file.exists())) return { kind: "snapshot", reason: "missing" };
+      if (file.size > MAX_ANNOTATABLE_FILE_BYTES) return { kind: "snapshot", reason: "too-large" };
+      return { kind: "current", html: await file.text() };
+    } catch (err) {
+      warnRootHtmlUnreadable(rootHtmlSourcePath, err);
+      return { kind: "snapshot", reason: "unreadable" };
+    }
+  }
+
+  // The in-app Refresh re-reads the root through /api/doc. For the ROOT
+  // document only (linked docs are unchanged), the response also carries the
+  // version-diff fields /api/plan serves, recomputed against the bytes just
+  // read, so a refresh keeps the "Show changes" toggle exactly like a reload.
+  const rootHistory = annotateHistory;
+  const rootHtmlVersionDiff =
+    rootHtmlSourcePath && rootHistory
+      ? {
+          path: rootHtmlSourcePath,
+          compute: (currentHtml: string) => ({
+            previousPlan: rootHistory.previousPlan,
+            versionInfo: rootHistory.versionInfo,
+            ...(rootHistory.previousPlan
+              ? { diffHtml: htmlAssets.rewriteHtml(htmlDiff(rootHistory.previousPlan, currentHtml), filePath) }
+              : {}),
+          }),
+        }
+      : undefined;
 
   async function loadShareHtml(pathParam: string | null): Promise<Response> {
     if (/^https?:\/\//i.test(filePath)) {
@@ -309,9 +476,16 @@ export async function startAnnotateServer(
     }
 
     try {
-      const html = renderHtml && rawHtml && requestedPath === sourcePath
-        ? rawHtml
-        : await Bun.file(requestedPath).text();
+      let html: string;
+      if (rootHtmlSourcePath && requestedPath === rootHtmlSourcePath) {
+        const read = await readRootHtml();
+        if (read?.kind === "snapshot" && read.reason === "too-large") {
+          return Response.json({ error: "File too large to share (max 2MB)" }, { status: 413 });
+        }
+        html = read?.kind === "current" ? read.html : rawHtml!;
+      } else {
+        html = await Bun.file(requestedPath).text();
+      }
       return Response.json({ shareHtml: htmlAssets.inlineHtml(html, requestedPath) });
     } catch {
       return Response.json({ error: "Failed to prepare share HTML" }, { status: 500 });
@@ -437,6 +611,12 @@ export async function startAnnotateServer(
     { graceMs: clientLeaseGraceMs },
   );
 
+  // Live app session state, populated after the annotate port is known (the
+  // editor origins carry the port) and before onReady advertises the URL.
+  let liveProxy: LiveAppProxy | null = null;
+  let liveSessionToken = "";
+  let liveAppUrl = "";
+
   const server = await startBunServerOnAvailablePort((port) =>
     Bun.serve({
         hostname: getServerHostname(),
@@ -459,14 +639,61 @@ export async function startAnnotateServer(
           }
 
           // API: Get plan content (reuse /api/plan so the plan editor UI works)
+          if (url.pathname === "/api/plan" && req.method === "GET" && mode === "annotate-app" && liveApp) {
+            // Live app session: no rawHtml, no renderAs, no version fields,
+            // sharing off. The client frames appUrl (the loopback proxy) and
+            // authenticates the bridge with liveToken.
+            return Response.json({
+              plan: "",
+              origin,
+              mode,
+              filePath,
+              sourceInfo: sourceInfo ?? liveApp.targetUrl,
+              appUrl: liveAppUrl,
+              targetUrl: liveApp.targetUrl,
+              liveToken: liveSessionToken,
+              gate,
+              approvalNotesSupported,
+              clientLease: clientLeaseSupported
+                ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
+                : { enabled: false as const },
+              sharingEnabled: false,
+              convertHtml: false,
+              repoInfo,
+              projectRoot: process.cwd(),
+              isWSL: wslFlag,
+              serverConfig: getServerConfig(gitUser),
+              agentTerminal: agentTerminal.capability,
+              feedbackTemplates: {
+                fileFeedback: getAnnotateFileFeedbackTemplate(origin),
+                messageFeedback: getAnnotateMessageFeedbackTemplate(origin),
+              },
+            });
+          }
+
           if (url.pathname === "/api/plan" && req.method === "GET") {
-            const displayRawHtml = renderHtml && rawHtml ? htmlAssets.rewriteHtml(rawHtml, filePath) : undefined;
+            // Local rendered-HTML roots serve their current bytes (see
+            // readRootHtml); every other session serves what it started with.
+            const rootRead = await readRootHtml();
+            const servedHtml = rootRead?.kind === "current" ? rootRead.html : rawHtml;
+            // The version-diff fields describe the SAVED baseline: previousPlan
+            // and versionInfo name the version history saved at startup, which
+            // stays the correct "previous version" however often the file is
+            // edited afterwards. When the served bytes differ from the startup
+            // snapshot the diff is RECOMPUTED against them (htmlDiff is pure,
+            // and a GET never writes history), so a tab reload after an agent
+            // edit keeps the "Show changes" toggle instead of losing it for
+            // the rest of the session. The in-app Refresh reads the same
+            // fields off /api/doc (rootHtmlVersionDiff), so refresh and
+            // reload converge on the same state.
+            const servedIsSnapshot = servedHtml === rawHtml;
+            const displayRawHtml = renderHtml && servedHtml ? htmlAssets.rewriteHtml(servedHtml, filePath) : undefined;
             // For HTML, render the version diff as the real page with inline
             // <ins>/<del> highlights (tag-aware htmlDiff), asset-rewritten the
             // same way as the live page so it renders identically.
             const diffHtml =
-              renderHtml && rawHtml && annotateHistory?.previousPlan
-                ? htmlAssets.rewriteHtml(htmlDiff(annotateHistory.previousPlan, rawHtml), filePath)
+              renderHtml && servedHtml && annotateHistory?.previousPlan
+                ? htmlAssets.rewriteHtml(htmlDiff(annotateHistory.previousPlan, servedHtml), filePath)
                 : undefined;
             const primarySource = getPrimarySource();
             return Response.json({
@@ -490,7 +717,7 @@ export async function startAnnotateServer(
                 ? {
                     previousPlan: annotateHistory.previousPlan,
                     versionInfo: annotateHistory.versionInfo,
-                    diffCurrent: annotateHistory.diffCurrent,
+                    diffCurrent: servedIsSnapshot || !servedHtml ? annotateHistory.diffCurrent : servedHtml,
                   }
                 : {}),
               sharingEnabled,
@@ -499,6 +726,10 @@ export async function startAnnotateServer(
               repoInfo,
               projectRoot: folderPath || process.cwd(),
               isWSL: wslFlag,
+              // Extra extensions the user registered as markdown (#1307).
+              // The renderer needs them to linkify relative/wiki links to
+              // sibling docs the same way it linkifies .md ones.
+              markdownExtensions: getExtraMarkdownExtensions(),
               serverConfig: getServerConfig(gitUser),
               agentTerminal: agentTerminal.capability,
               ...(recentMessages ? { recentMessages } : {}),
@@ -614,13 +845,16 @@ export async function startAnnotateServer(
           // API: Update user config (write-back to ~/.plannotator/config.json)
           if (url.pathname === "/api/config" && req.method === "POST") {
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
               const toSave: Record<string, unknown> = {};
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
               if (body.theme !== undefined) toSave.theme = body.theme;
+              if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
+              if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
+              if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
               if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
               return Response.json({ ok: true });
             } catch {
@@ -664,6 +898,7 @@ export async function startAnnotateServer(
                 mode === "annotate-folder" && annotateHistoryEnabled
                   ? { compute: computeFolderAnnotateHistory }
                   : undefined,
+              rootHtmlVersionDiff,
             });
           }
 
@@ -981,13 +1216,68 @@ export async function startAnnotateServer(
   const port = server.port!;
   const serverUrl = buildAdvertisedUrl(port);
 
+  if (liveApp) {
+    // Compose the proxy-served bridge body via the shared assembly (config
+    // prelude with the token this server owns, both editor origin forms
+    // with the localhost one first to match the advertised URL, then the
+    // bootstrap that installs the CSS, then the bridge itself).
+    liveSessionToken = randomBytes(16).toString("hex");
+    const editorOrigins = buildLiveEditorOrigins(port);
+    liveProxy = startLiveAppProxy({
+      targetUrl: liveApp.targetUrl,
+      editorOrigins,
+      bridgeJs: composeLiveBridgeJs({
+        token: liveSessionToken,
+        editorOrigins,
+        annotationCss: liveApp.annotationCss,
+        bridgeBootstrap: liveApp.bridgeBootstrap,
+        bridgeScript: liveApp.bridgeScript,
+      }),
+    });
+    // Advertise the proxy under the LOCALHOST spelling, carrying the target
+    // URL's own path and query (see buildLiveAppUrl in live-proxy-core for
+    // the same-site/cookie rationale). PLANNOTATOR_URL_HOST is still never
+    // applied here.
+    liveAppUrl = buildLiveAppUrl(liveProxy.port, liveApp.targetUrl);
+  }
+
   // The cache warm must never gate the listening socket. Its async filesystem
   // walk yields between directories while requests remain serviceable.
   void warmFileListCache(process.cwd(), "code");
 
-  // Notify caller that server is ready
+  const stop = () => {
+    // Every disposal step is guarded individually (runGuardedShutdown):
+    // agent-terminal teardown is historically fragile (#1314), and in a flat
+    // sequence one throwing step would skip everything after it — notably
+    // liveProxy.stop(), orphaning the live proxy's listener and its upstream
+    // WebSockets. A failed step is reported and the rest still run; the
+    // listener itself closes regardless.
+    runGuardedShutdown(
+      [
+        ["file browser watchers", () => closeAllFileBrowserWatchers()],
+        ["client lease", () => {
+          clientLease.cancel();
+          clientLease.closeSessions();
+        }],
+        ["AI runtime", () => aiRuntime?.dispose()],
+        ["agent terminal", () => agentTerminal.dispose()],
+        ["live proxy", () => liveProxy?.stop()],
+      ],
+      () => server.stop(),
+    );
+  };
+
+  // Notify caller that server is ready. An async ready handler that rejects
+  // (e.g. --tailscale publishing failed) must stop the server and propagate:
+  // firing-and-forgetting it would leave an unhandled rejection while the
+  // loopback server keeps listening and the session hangs forever.
   if (onReady) {
-    onReady(serverUrl, isRemote, port);
+    try {
+      await onReady(serverUrl, isRemote, port);
+    } catch (error) {
+      stop();
+      throw error;
+    }
   }
 
   return {
@@ -995,12 +1285,6 @@ export async function startAnnotateServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => {
-      clientLease.cancel();
-      clientLease.closeSessions();
-      aiRuntime?.dispose();
-      agentTerminal.dispose();
-      server.stop();
-    },
+    stop,
   };
 }
