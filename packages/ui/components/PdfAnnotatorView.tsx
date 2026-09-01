@@ -17,6 +17,7 @@ import {
 } from "@plannotator/core/pdf-annotations";
 import { AnnotationToolbar } from "./AnnotationToolbar";
 import { CommentPopover } from "./CommentPopover";
+import { ReadingProgressBar } from "./ReadingProgressBar";
 import { getIdentity } from "../utils/identity";
 import type { QuickLabel } from "../utils/quickLabels";
 import {
@@ -247,6 +248,7 @@ function PdfDocumentReader({
   }, [pdfDocument, pdfUrl]);
 
   const reader = useCallback(() => highlighterRef.current?.viewer, []);
+  const readingViewport = readerRevision > 0 ? reader()?.container ?? null : null;
 
   const updateReaderState = useCallback(() => {
     const viewer = reader();
@@ -455,6 +457,7 @@ function PdfDocumentReader({
         onNextSearchResult={() => selectSearchResult(searchResultIndex + 1)}
         onNavigationModeChange={setNavigationMode}
       />
+      <ReadingProgressBar viewport={readingViewport} resetKey={pdfUrl} />
       <div className="pn-pdf-reader-body">
         {navigationMode ? (
           <PdfReaderNavigationPanel

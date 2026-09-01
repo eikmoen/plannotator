@@ -18,6 +18,7 @@ import { annotateFileFeedback, annotateMessageFeedback, wrapFeedbackForClipboard
 import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
 import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/utils/skillCatalog';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
+import { ReadingProgressBar } from '@plannotator/ui/components/ReadingProgressBar';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
 import { PdfAnnotatorView } from '@plannotator/ui/components/PdfAnnotatorView';
 import type { PdfAnnotation, PdfAnnotationDocument, PdfGlobalComment } from '@plannotator/core/pdf-annotations';
@@ -5519,6 +5520,15 @@ const App: React.FC = () => {
           bearConfigured={getBearSettings().enabled}
           octarineConfigured={isOctarineConfigured()}
         />
+
+        {!isHtmlSurface && !isPdfSurface && !goalSetupMode && !isEditingMarkdown
+          && !(annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) && (
+          <ReadingProgressBar
+            viewport={scrollViewport}
+            resetKey={`${viewerContentKey}:${isPlanDiffActive ? 'diff' : 'document'}`}
+            className={usesDocumentScroll ? 'sticky top-[52px] z-[49]' : 'z-[49]'}
+          />
+        )}
 
         {/* The provider is render-transparent (context only, no DOM), so it can
             open here without changing the shell's element structure or order.
