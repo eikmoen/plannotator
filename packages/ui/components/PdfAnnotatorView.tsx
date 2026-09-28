@@ -322,7 +322,7 @@ function PdfDocumentReader({
 
   const goToPage = useCallback((requestedPage: number) => {
     const viewer = reader();
-    if (!viewer) return;
+    if (!viewer?.getPageView(0)) return;
     const nextPage = Math.max(1, Math.min(pdfDocument.numPages, Math.round(requestedPage)));
     hostRef.current?.onInteraction?.({ kind: 'page', page: nextPage });
     manualScrollRef.current = false;
@@ -388,7 +388,7 @@ function PdfDocumentReader({
 
   useEffect(() => {
     const viewer = reader();
-    if (!viewer) return;
+    if (!viewer?.getPageView(0) || readerRevision === 0) return;
     let restored = false;
     try {
       const memory = hostRef.current?.restoreView === false ? null : parsePdfReaderMemory(localStorage.getItem(memoryKey), pdfDocument.numPages);
@@ -434,7 +434,9 @@ function PdfDocumentReader({
 
   useEffect(() => {
     const viewer = reader(), request = host?.pageRequest;
-    if (!viewer || !request || !Number.isSafeInteger(request.page) || request.page < 1 || request.page > pdfDocument.numPages) return;
+    // A mounted highlighter ref can precede PDF.js page-view initialization,
+    // especially on warm remounts. The requested page must actually exist.
+    if (!viewer || readerRevision === 0 || !request || !Number.isSafeInteger(request.page) || request.page < 1 || request.page > pdfDocument.numPages || !viewer.getPageView(request.page - 1)) return;
     manualScrollRef.current = false;
     viewer.currentPageNumber = request.page;
     viewer.scrollPageIntoView({ pageNumber: request.page });
