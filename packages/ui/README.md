@@ -50,6 +50,38 @@ The sidebar/panel resize handle exposes seams for hosts that want different edge
 
 Building your own tooltip and removing the built-in double-click reset are host-side concerns (override `onDoubleClick` where you render the handle).
 
+### PDF reader host controls (prototype, unpublished)
+
+`components/PdfAnnotatorView` retains its selection/comment UI and annotation
+callbacks. Optional `host: PdfReaderHost` adds:
+
+- `pageRequest: { page, token }`: request a physical page; increment the token to
+  return to the same page. Invalid/out-of-bounds requests are ignored.
+- `onReady(pageCount)`: reader initialized. May fire again on initialization;
+  do not treat it as an exactly-once persistence event.
+- `onInteraction({ kind, page? })`: manual page navigation/scroll, text selection
+  (including a held drag), or annotation navigation. Programmatic page requests
+  are not manual navigation. Hosts decide whether a page change is away from the
+  audio context; scrolling alone must not change a following preference.
+- `restoreView: false`: suppress the reader's own page/offset/zoom storage and
+  restoration; start at fit width. `showProgress: false` hides PDF reading progress.
+- `draftNamespace`: key in-tab comment drafts by verified source identity rather
+  than only page/quote. This is not durable storage or cross-device draft sync.
+
+Optional `workerSrc`, `cMapUrl` (packed cmaps), and `standardFontDataUrl` allow
+same-origin PDF.js assets. Use a worker matching the installed PDF.js version.
+The host owns source verification: verify the selected edition's bytes first,
+pass the resulting Blob URL as `pdfUrl`, key the component by document identity,
+and abort/revoke old loads on document changes. Never apply positioned notes to
+unverified/different bytes. These controls do not implement persistence, audio,
+or an audio-following policy.
+
+The Paper audio scratch listening-journey test lives in the sibling prototype
+worktree at `tools/paper-audio/reader-prototype/test_browser.py`. It exercises the
+real component, including within-page/cross-page scroll, held selection,
+composition, and explicit return to the audio page. Existing standalone PDF tests
+remain in this package.
+
 ### Lazy renderers and the eager entries (`utils/math`, `utils/generateIdentity`, `utils/mermaid`; 0.32.0)
 
 The Mermaid runtime, the Graphviz engine, KaTeX and the username dictionary are off the static import graph of `Viewer`, so a host that bundles by route does not download them for a plain markdown read. Graphviz needs nothing from you (the block imports the engine inside its render effect and shows the source fence until the SVG lands, as it always did). Mermaid, KaTeX and the dictionary sit behind synchronous slots:

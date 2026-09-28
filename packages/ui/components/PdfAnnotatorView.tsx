@@ -39,9 +39,30 @@ import "./PdfAnnotatorView.css";
 
 type PdfHighlight = PdfAnnotation & IHighlight;
 type PdfDocumentProxy = Parameters<React.ComponentProps<typeof PdfLoader>["children"]>[0];
+// Pinned react-pdf-highlighter forwards these PDF.js options in getDocument's
+// props spread, but its declaration omits them. Keep the extension narrow here.
+const ConfiguredPdfLoader = PdfLoader as unknown as React.ComponentType<React.ComponentProps<typeof PdfLoader> & {
+  standardFontDataUrl?: string;
+  isEvalSupported?: boolean;
+}>;
+
+export interface PdfReaderHost {
+  /** A new token requests navigation even when the requested page is unchanged. */
+  pageRequest?: { page: number; token: number };
+  restoreView?: boolean;
+  showProgress?: boolean;
+  /** Namespace in-tab comment drafts by the host's verified source identity. */
+  draftNamespace?: string;
+  onReady?: (pageCount: number) => void;
+  onInteraction?: (event: { kind: 'page' | 'selection' | 'annotation'; page?: number }) => void;
+}
 
 export interface PdfAnnotatorViewProps {
   pdfUrl?: string;
+  workerSrc?: string;
+  cMapUrl?: string;
+  standardFontDataUrl?: string;
+  host?: PdfReaderHost;
   annotations: PdfAnnotation[];
   labels: PdfAnnotationDocument["labels"];
   pageMapping?: PdfPageMapping;
@@ -126,12 +147,14 @@ export function pdfQuickLabels(labels: PdfAnnotationDocument["labels"]): QuickLa
 function PdfSelectionComposer({
   highlight,
   labels,
+  draftNamespace = 'pdf',
   reveal,
   dismiss,
   create,
 }: {
   highlight: NewHighlight;
   labels: PdfAnnotationDocument["labels"];
+  draftNamespace?: string;
   reveal: () => void;
   dismiss: () => void;
   create: (options: { color: PdfAnnotationColor; label: string; note: string }) => void;
@@ -174,7 +197,7 @@ function PdfSelectionComposer({
           contextText={highlight.content.text || "Area highlight"}
           isGlobal={false}
           allowImages={false}
-          draftKey={`pdf:${highlight.position.pageNumber}:${highlight.content.text || "area"}`}
+          draftKey={`${draftNamespace}:${highlight.position.pageNumber}:${highlight.content.text || "area"}`}
           onSubmit={(note) => finish({ color: "yellow", label: "Comment", note })}
           onClose={dismiss}
         />
@@ -203,6 +226,7 @@ function HighlightPopup({
 function PdfDocumentReader({
   pdfDocument,
   pdfUrl,
+  host,
   annotations,
   labels,
   pageMapping,
@@ -214,6 +238,7 @@ function PdfDocumentReader({
 }: {
   pdfDocument: PdfDocumentProxy;
   pdfUrl: string;
+  host?: PdfReaderHost;
   annotations: PdfAnnotation[];
   labels: PdfAnnotationDocument["labels"];
   pageMapping?: PdfPageMapping;
@@ -223,6 +248,8 @@ function PdfDocumentReader({
   onSelectAnnotation: (id: string | null) => void;
   onUpdateAreaAnnotation: PdfAnnotatorViewProps["onUpdateAreaAnnotation"];
 }) {
+  const hostRef = useRef(host); hostRef.current = host;
+  const manualScrollRef = useRef(false);
   const scrollToRef = useRef<(highlight: IHighlight) => void>(() => {});
   const highlighterRef = useRef<PdfHighlighter<PdfHighlight> | null>(null);
   const selectionFinalizerRef = useRef<PdfSelectionFinalizer | null>(null);
@@ -258,6 +285,7 @@ function PdfDocumentReader({
   }, [reader]);
 
   const persistReaderState = useCallback(() => {
+    if (hostRef.current?.restoreView === false) return;
     const viewer = reader();
     if (!viewer) return;
     if (memoryTimerRef.current) clearTimeout(memoryTimerRef.current);
@@ -296,6 +324,8 @@ function PdfDocumentReader({
     const viewer = reader();
     if (!viewer) return;
     const nextPage = Math.max(1, Math.min(pdfDocument.numPages, Math.round(requestedPage)));
+    hostRef.current?.onInteraction?.({ kind: 'page', page: nextPage });
+    manualScrollRef.current = false;
     viewer.currentPageNumber = nextPage;
     viewer.scrollPageIntoView({ pageNumber: nextPage });
     setPageNumber(nextPage);
@@ -338,9 +368,17 @@ function PdfDocumentReader({
 
   useEffect(() => {
     const finishPointerSelection = () => selectionFinalizerRef.current?.finishPointerSelection();
+    const holdSelection = () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && selection.anchorNode && highlighterRef.current?.viewer?.container.contains(selection.anchorNode)) {
+        hostRef.current?.onInteraction?.({ kind: 'selection' });
+      }
+    };
+    document.addEventListener('selectionchange', holdSelection);
     window.addEventListener("pointerup", finishPointerSelection, true);
     window.addEventListener("pointercancel", finishPointerSelection, true);
     return () => {
+      document.removeEventListener('selectionchange', holdSelection);
       window.removeEventListener("pointerup", finishPointerSelection, true);
       window.removeEventListener("pointercancel", finishPointerSelection, true);
       selectionFinalizerRef.current?.dispose();
@@ -353,7 +391,7 @@ function PdfDocumentReader({
     if (!viewer) return;
     let restored = false;
     try {
-      const memory = parsePdfReaderMemory(localStorage.getItem(memoryKey), pdfDocument.numPages);
+      const memory = hostRef.current?.restoreView === false ? null : parsePdfReaderMemory(localStorage.getItem(memoryKey), pdfDocument.numPages);
       if (memory) {
         restored = true;
         scaleValueRef.current = memory.scaleValue;
@@ -376,13 +414,32 @@ function PdfDocumentReader({
       viewer.currentScaleValue = "page-width";
       updateReaderState();
     }
+    hostRef.current?.onReady?.(pdfDocument.numPages);
+    let scrollFrame = 0;
     const handleScroll = () => {
-      updateReaderState();
-      persistReaderState();
+      cancelAnimationFrame(scrollFrame);
+      // PDF.js updates currentPageNumber in its scroll RAF, not synchronously.
+      scrollFrame = requestAnimationFrame(() => {
+        if (manualScrollRef.current) hostRef.current?.onInteraction?.({ kind: 'page', page: viewer.currentPageNumber || 1 });
+        updateReaderState();
+        persistReaderState();
+      });
     };
     viewer.container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => viewer.container.removeEventListener("scroll", handleScroll);
+    return () => {
+      cancelAnimationFrame(scrollFrame);
+      viewer.container.removeEventListener("scroll", handleScroll);
+    };
   }, [memoryKey, pdfDocument.numPages, persistReaderState, reader, readerRevision, updateReaderState]);
+
+  useEffect(() => {
+    const viewer = reader(), request = host?.pageRequest;
+    if (!viewer || !request || !Number.isSafeInteger(request.page) || request.page < 1 || request.page > pdfDocument.numPages) return;
+    manualScrollRef.current = false;
+    viewer.currentPageNumber = request.page;
+    viewer.scrollPageIntoView({ pageNumber: request.page });
+    updateReaderState();
+  }, [host?.pageRequest?.token, host?.pageRequest?.page, readerRevision, reader, pdfDocument.numPages, updateReaderState]);
 
   useEffect(() => {
     if (navigationMode !== "outline" || outlineLoaded) return;
@@ -433,7 +490,11 @@ function PdfDocumentReader({
   useEffect(() => {
     if (!selectedAnnotationId) return;
     const selected = highlights.find(({ id }) => id === selectedAnnotationId);
-    if (selected) scrollToRef.current(selected);
+    if (selected) {
+      hostRef.current?.onInteraction?.({ kind: 'annotation', page: selected.position.pageNumber });
+      manualScrollRef.current = false;
+      scrollToRef.current(selected);
+    }
   }, [highlights, selectedAnnotationId]);
 
   return (
@@ -457,7 +518,7 @@ function PdfDocumentReader({
         onNextSearchResult={() => selectSearchResult(searchResultIndex + 1)}
         onNavigationModeChange={setNavigationMode}
       />
-      <ReadingProgressBar viewport={readingViewport} resetKey={pdfUrl} />
+      {host?.showProgress !== false && <ReadingProgressBar viewport={readingViewport} resetKey={pdfUrl} />}
       <div className="pn-pdf-reader-body">
         {navigationMode ? (
           <PdfReaderNavigationPanel
@@ -471,8 +532,12 @@ function PdfDocumentReader({
         ) : null}
         <main
           className="pn-pdf-viewer"
+          onWheelCapture={() => { manualScrollRef.current = true; }}
+          onTouchMoveCapture={() => { manualScrollRef.current = true; }}
+          onKeyDownCapture={(event) => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) manualScrollRef.current = true; }}
           onPointerDownCapture={(event) => {
             if (event.button !== 0 || !(event.target instanceof Element)) return;
+            manualScrollRef.current = true;
             if (event.target.closest(".textLayer")) selectionFinalizerRef.current?.beginPointerSelection();
           }}
         >
@@ -491,11 +556,13 @@ function PdfDocumentReader({
                 hide();
                 return null;
               }
+              hostRef.current?.onInteraction?.({ kind: 'selection', page: position.pageNumber });
               const highlight = { content, position } as NewHighlight;
               return (
                 <PdfSelectionComposer
                   highlight={highlight}
                   labels={labels}
+                  draftNamespace={host?.draftNamespace}
                   reveal={transform}
                   dismiss={hide}
                   create={(options) => onAddAnnotation(normalizeHighlight(highlight, options, pageMapping))}
@@ -552,6 +619,10 @@ function PdfDocumentReader({
 /** PDF renderer and selection adapter. App owns annotation state, panel, and saving. */
 export function PdfAnnotatorView({
   pdfUrl = "/api/pdf",
+  workerSrc,
+  cMapUrl,
+  standardFontDataUrl,
+  host,
   annotations,
   labels,
   pageMapping,
@@ -563,11 +634,12 @@ export function PdfAnnotatorView({
 }: PdfAnnotatorViewProps) {
   return (
     <div className="pn-pdf-surface" data-pdf-annotator>
-      <PdfLoader url={pdfUrl} beforeLoad={<div className="pn-pdf-loading">Loading PDF…</div>}>
+      <ConfiguredPdfLoader url={pdfUrl} workerSrc={workerSrc} cMapUrl={cMapUrl} cMapPacked={Boolean(cMapUrl)} standardFontDataUrl={standardFontDataUrl} isEvalSupported={host ? false : undefined} errorMessage={<div role="alert">PDF could not load.</div>} beforeLoad={<div className="pn-pdf-loading">Loading PDF…</div>}>
         {(pdfDocument) => (
           <PdfDocumentReader
             pdfDocument={pdfDocument}
             pdfUrl={pdfUrl}
+            host={host}
             annotations={annotations}
             labels={labels}
             pageMapping={pageMapping}
@@ -578,7 +650,7 @@ export function PdfAnnotatorView({
             onUpdateAreaAnnotation={onUpdateAreaAnnotation}
           />
         )}
-      </PdfLoader>
+      </ConfiguredPdfLoader>
     </div>
   );
 }
