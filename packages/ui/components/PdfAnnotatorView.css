@@ -1,5 +1,5 @@
 /* Ephemeral read-along cue, deliberately distinct from saved annotations. */
-::highlight(paper-audio-passage) { background-color: rgb(81 186 228 / 38%); color: inherit; }
+::highlight(paper-audio-passage) { background-color: rgb(81 186 228 / 14%); color: inherit; }
 
 .pn-pdf-surface {
   display: flex;
