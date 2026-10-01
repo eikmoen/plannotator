@@ -64,7 +64,9 @@ callbacks. Optional `host: PdfReaderHost` adds:
   are not manual navigation. Hosts decide whether a page change is away from the
   audio context; scrolling alone must not change a following preference.
 - `restoreView: false`: suppress the reader's own page/offset/zoom storage and
-  restoration; start at fit width. `showProgress: false` hides PDF reading progress.
+  restoration. `initialScale: 1` starts at 100%; absent/invalid values retain
+  fit width. A restored view still takes precedence when restoration is enabled.
+  `showProgress: false` hides PDF reading progress.
 - `draftNamespace`: key in-tab comment drafts by verified source identity rather
   than only page/quote. This is not durable storage or cross-device draft sync.
 

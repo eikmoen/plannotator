@@ -57,6 +57,8 @@ export interface PdfReaderHost {
   /** A new token requests navigation even when the requested page is unchanged. */
   pageRequest?: { page: number; token: number };
   restoreView?: boolean;
+  /** Initial numeric zoom (1 = 100%) when no view is restored; otherwise fit width. */
+  initialScale?: number;
   showProgress?: boolean;
   /** Namespace in-tab comment drafts by the host's verified source identity. */
   draftNamespace?: string;
@@ -268,10 +270,12 @@ function PdfDocumentReader({
   const selectionFinalizerRef = useRef<PdfSelectionFinalizer | null>(null);
   const memoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchIndexRef = useRef<Promise<PdfSearchPage[]> | null>(null);
-  const scaleValueRef = useRef("page-width");
+  const requestedScale = host?.initialScale;
+  const initialScale = typeof requestedScale === 'number' && Number.isFinite(requestedScale) && requestedScale >= 0.5 && requestedScale <= 3 ? String(requestedScale) : 'page-width';
+  const scaleValueRef = useRef(initialScale);
   const [readerRevision, setReaderRevision] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
-  const [pdfScaleValue, setPdfScaleValue] = useState("page-width");
+  const [pdfScaleValue, setPdfScaleValue] = useState(initialScale);
   const [scalePercent, setScalePercent] = useState(100);
   const [navigationMode, setNavigationMode] = useState<PdfNavigationMode>(null);
   const [outline, setOutline] = useState<PdfOutlineEntry[]>([]);
@@ -422,9 +426,9 @@ function PdfDocumentReader({
       // Ignore unavailable browser storage.
     }
     if (!restored) {
-      scaleValueRef.current = "page-width";
-      setPdfScaleValue("page-width");
-      viewer.currentScaleValue = "page-width";
+      scaleValueRef.current = initialScale;
+      setPdfScaleValue(initialScale);
+      viewer.currentScaleValue = initialScale;
       updateReaderState();
     }
     hostRef.current?.onReady?.(pdfDocument.numPages);
@@ -443,7 +447,7 @@ function PdfDocumentReader({
       cancelAnimationFrame(scrollFrame);
       viewer.container.removeEventListener("scroll", handleScroll);
     };
-  }, [memoryKey, pdfDocument.numPages, persistReaderState, reader, readerRevision, updateReaderState]);
+  }, [memoryKey, pdfDocument.numPages, persistReaderState, reader, readerRevision, updateReaderState, initialScale]);
 
   useEffect(() => {
     const viewer = reader(), request = host?.pageRequest;
