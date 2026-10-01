@@ -36,6 +36,7 @@ import {
   type PdfSearchResult,
 } from "../utils/pdfReader";
 import "./PdfAnnotatorView.css";
+import { findPdfPassage } from '../utils/pdfPassage';
 
 type PdfHighlight = PdfAnnotation & IHighlight;
 type PdfDocumentProxy = Parameters<React.ComponentProps<typeof PdfLoader>["children"]>[0];
@@ -46,6 +47,12 @@ const ConfiguredPdfLoader = PdfLoader as unknown as React.ComponentType<React.Co
   isEvalSupported?: boolean;
 }>;
 
+// AreaHighlight forwards these options to its Rnd control; its declaration
+// omits them. Read-only/add-only hosts must not offer a fake editable rectangle.
+const ConfiguredAreaHighlight = AreaHighlight as React.ComponentType<React.ComponentProps<typeof AreaHighlight> & {
+  disableDragging?: boolean; enableResizing?: boolean;
+}>;
+
 export interface PdfReaderHost {
   /** A new token requests navigation even when the requested page is unchanged. */
   pageRequest?: { page: number; token: number };
@@ -53,6 +60,10 @@ export interface PdfReaderHost {
   showProgress?: boolean;
   /** Namespace in-tab comment drafts by the host's verified source identity. */
   draftNamespace?: string;
+  allowAreaSelection?: boolean;
+  /** Source wording only; never normalized speech or guessed timing geometry. */
+  passage?: { text: string; start: number; end: number; revealToken: number };
+  onPassageMatch?: (kind: 'passage' | 'start' | 'unavailable') => void;
   onReady?: (pageCount: number) => void;
   onInteraction?: (event: { kind: 'page' | 'selection' | 'annotation'; page?: number }) => void;
 }
@@ -250,6 +261,8 @@ function PdfDocumentReader({
 }) {
   const hostRef = useRef(host); hostRef.current = host;
   const manualScrollRef = useRef(false);
+  const passageRevealRef = useRef(0);
+  const passageText = useMemo(() => new Map<number, Promise<string[]>>(), [pdfDocument]);
   const scrollToRef = useRef<(highlight: IHighlight) => void>(() => {});
   const highlighterRef = useRef<PdfHighlighter<PdfHighlight> | null>(null);
   const selectionFinalizerRef = useRef<PdfSelectionFinalizer | null>(null);
@@ -444,6 +457,66 @@ function PdfDocumentReader({
   }, [host?.pageRequest?.token, host?.pageRequest?.page, readerRevision, reader, pdfDocument.numPages, updateReaderState]);
 
   useEffect(() => {
+    const viewer = reader(), passage = host?.passage;
+    const registry = (globalThis.CSS as unknown as { highlights?: Map<string, unknown> })?.highlights;
+    const NativeHighlight = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    if (!viewer || !passage || !registry || !NativeHighlight) {
+      hostRef.current?.onPassageMatch?.('unavailable'); return;
+    }
+    let active = true;
+    let confirmed: ReturnType<typeof findPdfPassage> = null;
+    let sourcePages: number[] = [];
+    hostRef.current?.onPassageMatch?.('unavailable');
+    const mark = () => {
+      if (!active || !confirmed) return;
+      const nodes: Text[] = [];
+      viewer.container.querySelectorAll<HTMLElement>('.page[data-page-number]').forEach(page => {
+        const number = Number(page.dataset.pageNumber);
+        if (number < passage.start || number > passage.end) return;
+        page.querySelectorAll('span[role="presentation"]').forEach(span => {
+          if (span.firstChild?.nodeType === Node.TEXT_NODE && span.childNodes.length === 1) nodes.push(span.firstChild as Text);
+        });
+      });
+      const match = findPdfPassage(nodes.map(n => n.data), passage.text);
+      registry.delete('paper-audio-passage');
+      if (!match || match.kind !== confirmed.kind
+          || Number(nodes[match.start.item].parentElement?.closest<HTMLElement>('.page')?.dataset.pageNumber) !== sourcePages[confirmed.start.item]
+          || Number(nodes[match.end.item].parentElement?.closest<HTMLElement>('.page')?.dataset.pageNumber) !== sourcePages[confirmed.end.item]) {
+        hostRef.current?.onPassageMatch?.('unavailable'); return;
+      }
+      const range = document.createRange();
+      range.setStart(nodes[match.start.item], match.start.start);
+      range.setEnd(nodes[match.end.item], match.end.end);
+      registry.set('paper-audio-passage', new NativeHighlight(range));
+      hostRef.current?.onPassageMatch?.(match.kind);
+      if (passage.revealToken !== passageRevealRef.current) {
+        passageRevealRef.current = passage.revealToken;
+        manualScrollRef.current = false;
+        const box = range.getBoundingClientRect(), viewport = viewer.container.getBoundingClientRect();
+        viewer.container.scrollTop += box.top - viewport.top - 40;
+      }
+    };
+    const observer = new MutationObserver(mark);
+    // Verify uniqueness against complete page text, not only rendered spans.
+    // A repeated lead-in on an unmounted page must never produce a guessed cue.
+    void (async () => {
+      if (passage.end - passage.start > 3) return; // Broad ranges: text strip only.
+      const texts: string[] = [];
+      for (let page = passage.start; page <= passage.end; page++) {
+        if (!passageText.has(page)) passageText.set(page,
+          pdfDocument.getPage(page).then(p => p.getTextContent()).then(content =>
+            content.items.flatMap(item => 'str' in item ? [item.str] : [])));
+        const items = await passageText.get(page)!;
+        texts.push(...items); sourcePages.push(...items.map(() => page));
+      }
+      if (!active) return;
+      confirmed = findPdfPassage(texts, passage.text);
+      observer.observe(viewer.container, { childList: true, subtree: true }); mark();
+    })().catch(() => { if (active) hostRef.current?.onPassageMatch?.('unavailable'); });
+    return () => { active = false; observer.disconnect(); registry.delete('paper-audio-passage'); };
+  }, [host?.passage?.text, host?.passage?.start, host?.passage?.end, host?.passage?.revealToken, reader, readerRevision, pdfDocument, passageText]);
+
+  useEffect(() => {
     if (navigationMode !== "outline" || outlineLoaded) return;
     let cancelled = false;
     setOutlineBusy(true);
@@ -547,7 +620,7 @@ function PdfDocumentReader({
             ref={configureHighlighter}
             pdfDocument={pdfDocument}
             pdfScaleValue={pdfScaleValue}
-            enableAreaSelection={(event) => !readOnly && event.altKey}
+            enableAreaSelection={(event) => !readOnly && host?.allowAreaSelection !== false && event.altKey}
             onScrollChange={() => {}}
             scrollRef={(scrollTo) => {
               scrollToRef.current = scrollTo;
@@ -576,7 +649,9 @@ function PdfDocumentReader({
               const className = `pn-pdf-annotation-${annotationColor(annotation)}${selectedAnnotationId === annotation.id ? " pn-pdf-annotation-selected" : ""}`;
               const rendered = highlight.content?.image ? (
                 <div className={className} onClick={() => onSelectAnnotation(highlight.id)}>
-                  <AreaHighlight
+                  <ConfiguredAreaHighlight
+                    disableDragging={readOnly || !onUpdateAreaAnnotation}
+                    enableResizing={!readOnly && !!onUpdateAreaAnnotation}
                     isScrolledTo={isScrolledTo}
                     highlight={highlight}
                     onChange={(boundingRect) => {

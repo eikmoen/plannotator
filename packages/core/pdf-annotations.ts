@@ -88,6 +88,8 @@ export interface PdfSourceDescriptor {
 }
 
 export interface PdfAnnotationDocument {
+  /** Revision of the canonical sidecars, for compare-and-swap writes. */
+  revision?: string;
   source: {
     fileName: string;
     /** Human-readable document title, preferably from a sibling metadata.json. */

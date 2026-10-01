@@ -11,8 +11,13 @@ import {
 } from "@plannotator/core/pdf-annotations";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from 'node:util';
 
+import { PdfAnnotationConflictError, pdfAnnotationRevision, withPdfAnnotationLock } from './pdf-annotation-revision';
+export { PdfAnnotationConflictError } from './pdf-annotation-revision';
+
+export const PDF_ANNOTATION_STORE_PROTOCOL = 1;
 export const PDF_ANNOTATION_MAX_COUNT = 10_000;
 
 export interface PdfAnnotationSidecarPaths {
@@ -398,13 +403,26 @@ function atomicWrite(path: string, content: string): void {
     closeSync(descriptor);
     descriptor = undefined;
     renameSync(temporary, path);
+    if (process.platform !== 'win32') {
+      const directory = openSync(dirname(path), 'r');
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+    }
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
     try { unlinkSync(temporary); } catch { /* renamed or never created */ }
   }
 }
 
+function revision(source: PdfSourceDescriptor): string {
+  const p = pdfAnnotationSidecarPaths(source);
+  return pdfAnnotationRevision([p.normalized, p.raw, p.hidden, p.global, p.markdown, p.metadata]);
+}
+
 export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnotationDocument {
+  return withPdfAnnotationLock(source.sourceDirectory, () => loadPdfAnnotationDocumentUnlocked(source));
+}
+
+function loadPdfAnnotationDocumentUnlocked(source: PdfSourceDescriptor): PdfAnnotationDocument {
   const paths = pdfAnnotationSidecarPaths(source);
   const browser = readJson<unknown[]>(paths.normalized, [])
     .filter((value): value is PdfAnnotation => Boolean(
@@ -417,6 +435,7 @@ export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnot
   const seen = new Set(browser.map((annotation) => annotation.id));
   const sourceMetadata = loadPdfSourceMetadata(source);
   return {
+    revision: revision(source),
     source: { fileName: source.pdfName, ...sourceMetadata },
     annotations: sortPdfAnnotations([...browser, ...raw.filter((annotation) => !seen.has(annotation.id))]),
     globalComments: loadPdfGlobalComments(source),
@@ -426,6 +445,24 @@ export function loadPdfAnnotationDocument(source: PdfSourceDescriptor): PdfAnnot
 }
 
 export function savePdfAnnotationDocument(
+  source: PdfSourceDescriptor,
+  annotations: readonly PdfAnnotation[],
+  globalComments?: readonly PdfGlobalComment[],
+  expectedRevision?: string,
+): PdfAnnotationDocument {
+  return withPdfAnnotationLock(source.sourceDirectory, () => {
+    if (expectedRevision !== undefined && expectedRevision !== revision(source)) throw new PdfAnnotationConflictError();
+    // Old already-open clients must not silently erase newly synchronized audio
+    // comments. Once audio participates, every full-document writer needs CAS.
+    const guard = join(source.sourceDirectory, 'metadata', 'annotations-revision-required');
+    if (expectedRevision === undefined && (existsSync(guard) || loadPdfGlobalComments(source).some(c => c.id.startsWith('audio-')))) {
+      throw new PdfAnnotationConflictError('This PDF requires revision-aware saves. Keep this tab and its draft open; update/merge before saving.');
+    }
+    return savePdfAnnotationDocumentUnlocked(source, annotations, globalComments);
+  });
+}
+
+function savePdfAnnotationDocumentUnlocked(
   source: PdfSourceDescriptor,
   annotations: readonly PdfAnnotation[],
   globalComments?: readonly PdfGlobalComment[],
@@ -457,5 +494,68 @@ export function savePdfAnnotationDocument(
     mapping,
     normalizedGlobalComments,
   ));
-  return loadPdfAnnotationDocument(source);
+  return loadPdfAnnotationDocumentUnlocked(source);
+}
+
+/** Add one genuine selection through the canonical lock/CAS boundary.
+ * Same-ID/same-content replay repairs an interrupted JSON → Markdown projection.
+ * Never rewrites raw/hidden/global sidecars or removes another writer's notes.
+ */
+export function appendPdfAnnotation(
+  source: PdfSourceDescriptor, annotation: PdfAnnotation, expectedRevision: string, expectedPdfHash: string,
+): PdfAnnotationDocument {
+  return withPdfAnnotationLock(source.sourceDirectory, () => {
+    const hash = createHash('sha256').update(readFileSync(source.pdfPath)).digest('hex');
+    if (hash !== expectedPdfHash) throw new PdfAnnotationConflictError('PDF source changed; positioned save withheld.');
+    const paths = pdfAnnotationSidecarPaths(source);
+    // Read tolerance is not write permission: malformed existing data fails closed.
+    for (const path of [paths.normalized, paths.raw, paths.hidden, paths.global]) {
+      if (existsSync(path) && !Array.isArray(JSON.parse(readFileSync(path, 'utf8')))) throw new Error('Invalid annotation sidecar');
+    }
+    const doc = loadPdfAnnotationDocumentUnlocked(source);
+    const normalized = normalizePdfAnnotations([annotation], doc.pageMapping)[0];
+    if (!normalized) throw new Error('Imported annotations cannot be appended');
+    const existing = doc.annotations.find(a => a.id === normalized.id);
+    const serializable = (value: unknown) => JSON.parse(JSON.stringify(value));
+    if (existing && !isDeepStrictEqual(serializable(existing), serializable(normalized))) {
+      throw new PdfAnnotationConflictError('Annotation ID already has different content.');
+    }
+    if (!existing && doc.revision !== expectedRevision) throw new PdfAnnotationConflictError();
+    if (!existing && doc.annotations.length >= PDF_ANNOTATION_MAX_COUNT) throw new Error('Too many annotations');
+    const rows = existsSync(paths.normalized) ? JSON.parse(readFileSync(paths.normalized, 'utf8')) : [];
+    atomicWrite(join(source.sourceDirectory, 'metadata', 'annotations-revision-required'), 'revision-v1\n');
+    if (!existing) atomicWrite(paths.normalized, `${JSON.stringify([...rows, normalized], null, 2)}\n`);
+    const updated = loadPdfAnnotationDocumentUnlocked(source);
+    const markdown = existsSync(paths.markdown) ? readFileSync(paths.markdown, 'utf8') : '# Annotations\n';
+    atomicWrite(paths.markdown, mergePdfAnnotationsMarkdown(markdown, source.pdfName,
+      updated.annotations.filter(a => !a.imported), updated.pageMapping, updated.globalComments));
+    return loadPdfAnnotationDocumentUnlocked(source);
+  });
+}
+
+/** Append a source-linked comment without rewriting existing highlight JSON.
+ * Stable IDs make receipt replay idempotent; re-exporting repairs an interrupted
+ * global-JSON → Markdown publication. The caller must retain its durable receipt.
+ */
+export function appendPdfGlobalComment(
+  source: PdfSourceDescriptor, comment: PdfGlobalComment, expectedRevision: string,
+): PdfAnnotationDocument {
+  return withPdfAnnotationLock(source.sourceDirectory, () => {
+    if (expectedRevision !== revision(source)) throw new PdfAnnotationConflictError();
+    const paths = pdfAnnotationSidecarPaths(source);
+    const doc = loadPdfAnnotationDocumentUnlocked(source);
+    const normalized = normalizePdfGlobalComments([comment])[0];
+    const existing = doc.globalComments.find(c => c.id === normalized.id);
+    if (existing && ['text', 'author', 'created_at'].some(key => existing[key as keyof PdfGlobalComment] !== normalized[key as keyof PdfGlobalComment])) {
+      throw new PdfAnnotationConflictError('This comment was changed after it was captured. Refusing to overwrite it.');
+    }
+    const comments = existing ? doc.globalComments : [...doc.globalComments, normalized];
+    if (comments.length > PDF_ANNOTATION_MAX_COUNT) throw new Error('Too many PDF global comments');
+    atomicWrite(join(source.sourceDirectory, 'metadata', 'annotations-revision-required'), 'revision-v1\n');
+    atomicWrite(paths.global, `${JSON.stringify(comments, null, 2)}\n`);
+    const markdown = existsSync(paths.markdown) ? readFileSync(paths.markdown, 'utf8') : '# Annotations\n';
+    atomicWrite(paths.markdown, mergePdfAnnotationsMarkdown(markdown, source.pdfName,
+      doc.annotations.filter(a => !a.imported), doc.pageMapping, comments));
+    return loadPdfAnnotationDocumentUnlocked(source);
+  });
 }

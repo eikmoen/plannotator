@@ -50,7 +50,7 @@ The sidebar/panel resize handle exposes seams for hosts that want different edge
 
 Building your own tooltip and removing the built-in double-click reset are host-side concerns (override `onDoubleClick` where you render the handle).
 
-### PDF reader host controls (prototype, unpublished)
+### PDF reader host controls (source integration, unpublished)
 
 `components/PdfAnnotatorView` retains its selection/comment UI and annotation
 callbacks. Optional `host: PdfReaderHost` adds:
@@ -67,6 +67,16 @@ callbacks. Optional `host: PdfReaderHost` adds:
   restoration; start at fit width. `showProgress: false` hides PDF reading progress.
 - `draftNamespace`: key in-tab comment drafts by verified source identity rather
   than only page/quote. This is not durable storage or cross-device draft sync.
+
+- `allowAreaSelection: false`: add-only text hosts can disable area creation.
+  Areas are also non-draggable/non-resizable when read-only or no area-update callback exists.
+- `passage: { text, start, end, revealToken }`: optional verified source wording
+  and physical page context. Matching checks complete native page text before
+  applying a transient CSS highlight to rendered text. Short, ambiguous, unmatched
+  and broad (>4 page) contexts get no cue. Increment `revealToken` only for an
+  explicit locate action. Ordinary text updates never scroll within the page.
+- `onPassageMatch`: `passage`, `start` (unique lead-in only), or `unavailable`.
+  This is not word timing and never writes or modifies a saved annotation.
 
 Optional `workerSrc`, `cMapUrl` (packed cmaps), and `standardFontDataUrl` allow
 same-origin PDF.js assets. Use a worker matching the installed PDF.js version.
