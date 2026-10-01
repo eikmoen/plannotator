@@ -493,7 +493,7 @@ function PdfDocumentReader({
       range.setEnd(nodes[match.end.item], match.end.end);
       registry.set('paper-audio-passage', new NativeHighlight(range));
       hostRef.current?.onPassageMatch?.(match.kind);
-      if (passage.revealToken !== passageRevealRef.current) {
+      if (passage.revealToken > 0 && passage.revealToken !== passageRevealRef.current) {
         passageRevealRef.current = passage.revealToken;
         manualScrollRef.current = false;
         const box = range.getBoundingClientRect(), viewport = viewer.container.getBoundingClientRect();

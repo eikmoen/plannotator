@@ -76,7 +76,9 @@ callbacks. Optional `host: PdfReaderHost` adds:
   and physical page context. Matching checks complete native page text before
   applying a transient CSS highlight to rendered text. Short, ambiguous, unmatched
   and broad (>4 page) contexts get no cue. Increment `revealToken` only for an
-  explicit locate action. Ordinary text updates never scroll within the page.
+  explicit locate action; zero means no locate request. Scope tokens to the
+  intended passage and clear pending requests on later manual navigation.
+  Ordinary text updates never scroll within the page.
 - `onPassageMatch`: `passage`, `start` (unique lead-in only), or `unavailable`.
   This is not word timing and never writes or modifies a saved annotation.
 
