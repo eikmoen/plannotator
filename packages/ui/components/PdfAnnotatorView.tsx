@@ -36,7 +36,7 @@ import {
   type PdfSearchResult,
 } from "../utils/pdfReader";
 import "./PdfAnnotatorView.css";
-import { findPdfPassage } from '../utils/pdfPassage';
+import { findPdfPassage, pdfTextForPassage, pdfPassageParts } from '../utils/pdfPassage';
 
 type PdfHighlight = PdfAnnotation & IHighlight;
 type PdfDocumentProxy = Parameters<React.ComponentProps<typeof PdfLoader>["children"]>[0];
@@ -468,35 +468,38 @@ function PdfDocumentReader({
       hostRef.current?.onPassageMatch?.('unavailable'); return;
     }
     let active = true;
-    let confirmed: ReturnType<typeof findPdfPassage> = null;
+    let confirmed: ReturnType<typeof pdfPassageParts> = null;
     let sourcePages: number[] = [];
     hostRef.current?.onPassageMatch?.('unavailable');
     const mark = () => {
       if (!active || !confirmed) return;
-      const nodes: Text[] = [];
-      viewer.container.querySelectorAll<HTMLElement>('.page[data-page-number]').forEach(page => {
-        const number = Number(page.dataset.pageNumber);
-        if (number < passage.start || number > passage.end) return;
-        page.querySelectorAll('span[role="presentation"]').forEach(span => {
+      const ranges: Range[] = [];
+      let firstRange: Range | undefined;
+      confirmed.parts.forEach((part, partIndex) => {
+        const nodes: Text[] = [];
+        viewer.container.querySelectorAll(`.page[data-page-number="${part.page}"] .textLayer span[role="presentation"]`).forEach(span => {
           if (span.firstChild?.nodeType === Node.TEXT_NODE && span.childNodes.length === 1) nodes.push(span.firstChild as Text);
         });
+        // The whole source has already matched native page text. Match each
+        // rendered part exactly; never fall back to a second, shorter lead-in.
+        const match = findPdfPassage(nodes.map(n => n.data), part.text, 1);
+        if (!match || match.kind !== 'passage') return;
+        for (let i = match.start.item; i <= match.end.item; i++) {
+          const range = document.createRange();
+          range.setStart(nodes[i], i === match.start.item ? match.start.start : 0);
+          range.setEnd(nodes[i], i === match.end.item ? match.end.end : nodes[i].length);
+          ranges.push(range);
+          if (partIndex === 0 && !firstRange) firstRange = range;
+        }
       });
-      const match = findPdfPassage(nodes.map(n => n.data), passage.text);
       registry.delete('paper-audio-passage');
-      if (!match || match.kind !== confirmed.kind
-          || Number(nodes[match.start.item].parentElement?.closest<HTMLElement>('.page')?.dataset.pageNumber) !== sourcePages[confirmed.start.item]
-          || Number(nodes[match.end.item].parentElement?.closest<HTMLElement>('.page')?.dataset.pageNumber) !== sourcePages[confirmed.end.item]) {
-        hostRef.current?.onPassageMatch?.('unavailable'); return;
-      }
-      const range = document.createRange();
-      range.setStart(nodes[match.start.item], match.start.start);
-      range.setEnd(nodes[match.end.item], match.end.end);
-      registry.set('paper-audio-passage', new NativeHighlight(range));
-      hostRef.current?.onPassageMatch?.(match.kind);
-      if (passage.revealToken > 0 && passage.revealToken !== passageRevealRef.current) {
+      if (!ranges.length) { hostRef.current?.onPassageMatch?.('unavailable'); return; }
+      registry.set('paper-audio-passage', new NativeHighlight(...ranges));
+      hostRef.current?.onPassageMatch?.(confirmed.kind);
+      if (firstRange && passage.revealToken > 0 && passage.revealToken !== passageRevealRef.current) {
         passageRevealRef.current = passage.revealToken;
         manualScrollRef.current = false;
-        const box = range.getBoundingClientRect(), viewport = viewer.container.getBoundingClientRect();
+        const box = firstRange.getBoundingClientRect(), viewport = viewer.container.getBoundingClientRect();
         viewer.container.scrollTop += box.top - viewport.top - 40;
       }
     };
@@ -508,13 +511,18 @@ function PdfDocumentReader({
       const texts: string[] = [];
       for (let page = passage.start; page <= passage.end; page++) {
         if (!passageText.has(page)) passageText.set(page,
-          pdfDocument.getPage(page).then(p => p.getTextContent()).then(content =>
-            content.items.flatMap(item => 'str' in item ? [item.str] : [])));
+          pdfDocument.getPage(page).then(async p => {
+            const viewport = p.getViewport({ scale: 1 });
+            const items = (await p.getTextContent()).items.flatMap(item => 'str' in item ? [item] : []);
+            return pdfTextForPassage(items.map(item => ({ ...item,
+              baseline: viewport.convertToViewportPoint(item.transform[4], item.transform[5])[1],
+            })), viewport.height);
+          }));
         const items = await passageText.get(page)!;
         texts.push(...items); sourcePages.push(...items.map(() => page));
       }
       if (!active) return;
-      confirmed = findPdfPassage(texts, passage.text);
+      confirmed = pdfPassageParts(texts, sourcePages, passage.text);
       observer.observe(viewer.container, { childList: true, subtree: true }); mark();
     })().catch(() => { if (active) hostRef.current?.onPassageMatch?.('unavailable'); });
     return () => { active = false; observer.disconnect(); registry.delete('paper-audio-passage'); };
